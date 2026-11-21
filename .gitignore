@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# UV
+uv.lock
+
+# Node / Bun
+node_modules/
+.turbo/
+*.tsbuildinfo
+bun.lock
+
+# Build outputs
+dist/
+out/
+
+# Stray TS compile artifacts leaking into source dirs
+**/src/**/*.js
+**/src/**/*.js.map
+**/src/**/*.d.ts
+**/tests/**/*.js
+**/tests/**/*.js.map
+**/tests/**/*.d.ts
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
+apps/web/vite.config.js.map
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent runtime data (user-specific)
+*.db
+*.db-shm
+*.db-wal
+sessions/
+
+# Optional local/custom fonts (not distributed in git; web UI loads Google Fonts by default)
+apps/web/assets/fonts/
+
+TODO.md

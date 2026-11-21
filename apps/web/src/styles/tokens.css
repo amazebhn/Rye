@@ -1,0 +1,111 @@
+:root {
+  /* Sidebar palette (Notion off-white) */
+  --color-bg:            #f7f7f5;
+  --color-surface:       #efeeec;
+  --color-surface-alt:   #e9e8e4;
+  --color-border-subtle: #f1f0ee;
+  --color-border:        #e8e7e3;
+  --color-fg-faint:      #b4b3ad;
+  --color-fg-dim:        #918f8a;
+  --color-fg-muted:      #6b6a64;
+  --color-fg-light:      #4a4946;
+  --color-fg:            #37352f;
+  --color-accent:        #2383e2;
+  --color-code:          #eb5757;
+  --color-success:       #0f7b6c;
+  --color-success-bg:    #ddedea;
+  --color-danger:        #e03e3e;
+  --color-danger-hover:  #c93434;
+  --color-danger-bg:     #fbe4e4;
+
+  /* Floating sidebar menu */
+  --sidebar-menu-bg:             var(--main-bg);
+  --sidebar-menu-fg:             var(--color-fg);
+  --sidebar-menu-fg-disabled:    var(--color-fg-faint);
+  --sidebar-menu-border:         var(--color-border);
+  --sidebar-menu-hover:          var(--color-surface);
+  --sidebar-menu-trigger-bg:     var(--color-surface-alt);
+  --sidebar-menu-danger:         var(--color-danger);
+  --sidebar-menu-danger-hover:   var(--color-danger-bg);
+  --sidebar-menu-focus:          var(--color-accent);
+  --sidebar-menu-shadow:         0 14px 36px rgba(55, 53, 47, 0.14), 0 2px 8px rgba(55, 53, 47, 0.08);
+
+  /* Main content area (Notion white) */
+  --main-bg:             #ffffff;
+  --main-surface:        #f7f6f3;
+  --main-surface-alt:    #f1f0ed;
+  --main-border:         #ecebe7;
+  --main-border-subtle:  #f3f2ef;
+  --main-fg:             #37352f;
+  --main-fg-muted:       #6b6a64;
+  --main-fg-faint:       #b4b3ad;
+  --main-accent:         #2383e2;
+  --main-accent-alt:     #0b6bcb;
+  --main-code-bg:        #f7f6f3;
+  --main-code:           #eb5757;
+  --main-success:        #0f7b6c;
+  --main-primary-hover:  #000000;
+  --main-ai-accent:      #6366f1;
+  --main-warning:        #b4600d;
+  --main-warning-bg:     #fdf1e1;
+  --main-warning-text:   #956400;
+
+  /* Approval prompt choices */
+  --main-approve-selected: #24231f;
+  --main-deny-fg:          #9f3f3b;
+  --main-deny-bg:          #fdf6f5;
+  --main-deny-border:      #d9b5b2;
+
+  /* Environment status dots */
+  --env-dot-safe:        #22c55e;
+  --env-dot-semi:        #f97316;
+  --env-dot-prod:        #ef4444;
+
+  /* Typography */
+  --font-ui:             'Allo', 'Inter', 'Lato', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* Radius scale */
+  --radius-xs:           4px;
+  --radius-sm:           6px;
+  --radius-md:           8px;
+  --radius-lg:           10px;
+  --radius-xl:           12px;
+  --radius-2xl:          16px;
+  --radius-pill:         999px;
+
+  /* Elevation */
+  --shadow-xs:           0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-sm:           0 4px 14px -6px rgba(16, 24, 40, 0.16);
+  --shadow-md:           0 6px 18px -10px rgba(16, 24, 40, 0.16);
+  --shadow-lg:           0 14px 36px -16px rgba(16, 24, 40, 0.24);
+  --shadow-popover:      0 4px 16px rgba(15, 23, 42, 0.08);
+  --shadow-dialog:       0 1px 2px rgba(15, 23, 42, 0.06), 0 16px 36px -8px rgba(15, 23, 42, 0.22);
+  --shadow-modal:        0 0 0 1px rgba(16, 24, 40, 0.06), 0 4px 8px -2px rgba(16, 24, 40, 0.06), 0 24px 48px -12px rgba(16, 24, 40, 0.22);
+
+  /* Focus rings */
+  --focus-ring-soft:     0 0 0 3px color-mix(in srgb, var(--main-accent) 9%, transparent);
+  --focus-ring:          0 0 0 3px color-mix(in srgb, var(--main-accent) 16%, transparent);
+}
+
+/* Dark palette is opt-in until Rye has a user-facing theme control. */
+:root[data-theme="dark"] {
+  --sidebar-menu-bg:             #252525;
+  --sidebar-menu-fg:             #f1f1f1;
+  --sidebar-menu-fg-disabled:    #a0a0a0;
+  --sidebar-menu-border:         rgba(255, 255, 255, 0.07);
+  --sidebar-menu-hover:          #343434;
+  --sidebar-menu-trigger-bg:     #303030;
+  --sidebar-menu-danger:         #ff7770;
+  --sidebar-menu-danger-hover:   rgba(231, 76, 68, 0.12);
+  --sidebar-menu-focus:          rgba(255, 255, 255, 0.7);
+  --sidebar-menu-shadow:         0 18px 44px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.22);
+
+  --main-warning:        #f0a95a;
+  --main-warning-bg:     rgba(230, 150, 60, 0.14);
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+}

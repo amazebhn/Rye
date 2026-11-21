@@ -1,0 +1,120 @@
+/* ── Global scrollbar theme ────────────────────────────────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-md);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-fg-faint);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+.app {
+  display: flex;
+  height: 100vh;
+  font-family: var(--font-ui);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--main-bg);
+  color: var(--main-fg);
+}
+
+/* Re-map shared design tokens to the light palette inside the main pane
+   (and the file preview beside it) so panels/modals/components inherit
+   light styling automatically. */
+.main,
+.artifact-sheet {
+  --color-bg:            var(--main-bg);
+  --color-surface:       var(--main-surface);
+  --color-surface-alt:   var(--main-surface-alt);
+  --color-border-subtle: var(--main-border-subtle);
+  --color-border:        var(--main-border);
+  --color-fg-faint:      var(--main-fg-faint);
+  --color-fg-dim:        var(--main-fg-faint);
+  --color-fg-muted:      var(--main-fg-muted);
+  --color-fg-light:      var(--main-fg);
+  --color-fg:            var(--main-fg);
+  --color-accent:        var(--main-accent);
+  --color-code:          var(--main-code);
+}
+
+/* ── Spin animation (used for refresh icon) ──────────────────────────────── */
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+/* ── Collapse (animated height for components/shared/Collapse.tsx) ──────── */
+
+.collapse {
+  --collapse-ease: cubic-bezier(0.2, 0, 0, 1);
+  --collapse-duration: 0.3s;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--collapse-duration) var(--collapse-ease);
+}
+
+.collapse.open {
+  grid-template-rows: 1fr;
+}
+
+/* Content slides and fades on the same curve as the height, so it travels with the opening. */
+/* Child combinators throughout: a settled outer Collapse must not unclip or reveal a nested one mid-animation. */
+.collapse > .collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity var(--collapse-duration) var(--collapse-ease), transform var(--collapse-duration) var(--collapse-ease);
+}
+
+.collapse.open > .collapse-inner {
+  opacity: 1;
+  transform: none;
+}
+
+.collapse.settled > .collapse-inner {
+  overflow: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapse,
+  .collapse > .collapse-inner { transition: none; }
+}

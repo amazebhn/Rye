@@ -1,0 +1,233 @@
+# Rye Agent — example configuration
+# Copy to ~/.config/rye/config.toml and edit as needed.
+# Override any value with an environment variable (see comments per section).
+# Env file: place a .env in the working directory and it will also be read.
+
+# ---------------------------------------------------------------------------
+# Server
+# RYE_HOST, RYE_PORT
+# ---------------------------------------------------------------------------
+host = "127.0.0.1"
+port = 7337
+
+# ---------------------------------------------------------------------------
+# LLM provider: "ollama" (local), "copilot" / "github" (GitHub Copilot API),
+# or a list to enable several, e.g. ["github", "ollama"]. Every listed
+# provider's models appear in the pickers; the first one fills blank tiers.
+# RYE_LLM_PROVIDER (comma-separated for a list, e.g. github,ollama)
+# ---------------------------------------------------------------------------
+llm_provider = "ollama"
+
+# ---------------------------------------------------------------------------
+# Ollama (local LLM — default provider)
+# RYE_OLLAMA_BASE_URL, RYE_OLLAMA_MODEL, RYE_OLLAMA_EMBEDDING_MODEL, RYE_OLLAMA_CONTEXT_WINDOW
+# ---------------------------------------------------------------------------
+[ollama]
+base_url = "http://localhost:11434"
+model = "llama3.1"
+embedding_model = "nomic-embed-text"
+# Context window in tokens; long chats are summarised at ~72% of it.
+# Match the context length Ollama runs the model with (OLLAMA_CONTEXT_LENGTH / num_ctx).
+context_window = 32768
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot (cloud LLM — enable with llm_provider = "github" or ["github", ...])
+# RYE_COPILOT_API_KEY, RYE_COPILOT_BASE_URL, RYE_COPILOT_MODEL
+# ---------------------------------------------------------------------------
+[copilot]
+api_key = ""                                  # required when using copilot
+base_url = "https://api.githubcopilot.com"
+# Leave blank (or omit) to auto-select the newest Sonnet from the live catalog.
+# Set an explicit id to pin one, e.g. model = "gpt-4.1".
+model = ""
+
+# ---------------------------------------------------------------------------
+# Model tiers — pick a model per cost/capability tier, then route tasks to a tier.
+# Blank tier = auto-pick from the live catalog:
+#   low    → newest Claude Haiku, then GPT-4.x mini, then Gemini Flash
+#   medium → [copilot].model if set, else the newest Sonnet
+#   high   → newest Claude Opus (falls back to medium)
+# When Ollama is the first llm_provider, a blank tier uses [ollama].model.
+# A tier can name a model from any listed provider (e.g. low = "llama3.2").
+# RYE_MODEL_LOW, RYE_MODEL_MEDIUM, RYE_MODEL_HIGH
+# Values changed in the app's Settings page are stored in
+# ~/.local/share/rye/model-settings.json and take precedence over this file.
+# ---------------------------------------------------------------------------
+[models]
+low = ""
+medium = ""
+high = ""
+
+[models.tasks]
+chat = "medium"         # conversations, investigations, reports
+subagent = "medium"     # parallel research agents
+compaction = "medium"   # summarizing long conversations
+extraction = "medium"   # capturing SOPs and Skills from a chat
+doc_review = "low"      # AI Editor suggested edits
+labels = "low"          # chat titles and step summaries
+
+# ---------------------------------------------------------------------------
+# Decision model — picks which tool groups each message needs, to cut the
+# tool definitions sent per call. Its picks are added to the keyword
+# selector's (never removes them); on timeout or error, keyword picks are used.
+#   provider = "off"    — keyword selector only (default)
+#   provider = "ollama" — a decision model served by Ollama 0.35.1+ through
+#                         /v1/systemone, e.g. Clef: `ollama pull clef-flash`.
+#                         model = its tag (e.g. "clef-flash:9b"); blank = first
+#                         installed decision model. Kept loaded between messages.
+#   provider = "chat"   — any chat model Rye supports (Copilot or Ollama) answers
+#                         as strict JSON. model = a model id; blank = the low tier.
+#   provider = "clef"   — Clef over an API: Cloudflare Workers AI or a
+#                         self-hosted Jev/SystemOne server (model = "clef" or
+#                         "clef-flash"; blank = "clef-flash").
+# provider and model can also be changed on the app's Settings page (stored in
+# model-settings.json). Secrets stay here or in env vars only.
+# RYE_DECISION_PROVIDER, RYE_DECISION_MODEL,
+# RYE_CLEF_BASE_URL, RYE_CLEF_ACCOUNT_ID, RYE_CLEF_API_TOKEN
+# ---------------------------------------------------------------------------
+[decision]
+provider = "off"
+model = ""
+timeout_ms = 2500       # give up and use keyword selection after this
+tool_threshold = 0.5    # include a group when p(needed) >= this
+
+[decision.clef]
+base_url = ""           # self-hosted: POST {base_url}/v1/systemone; wins when set
+account_id = ""         # Cloudflare Workers AI, used when base_url is blank
+api_token = ""          # e.g. "${CLOUDFLARE_API_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# Code search
+# RYE_CODE_SEARCH_REPOS_ROOT, RYE_CODE_SEARCH_USE_RIPGREP,
+# RYE_CODE_SEARCH_MAX_RESULTS
+# ---------------------------------------------------------------------------
+[code_search]
+# Directory to auto-scan for git repos (any subdirectory containing .git).
+# Set this to wherever you keep your local checkouts, e.g. ~/Code.
+repos_root = "~/Code"
+
+# Prefer ripgrep (rg) when available; falls back to pure Python automatically.
+use_ripgrep = true
+
+# Maximum number of search results returned per query.
+max_results = 100
+
+# Directory names to skip during search (applied at every level of the tree).
+file_excludes = [
+  "node_modules",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".git",
+  "dist",
+  "build",
+  ".turbo",
+  "coverage",
+]
+
+# Explicit repos to include in addition to those auto-discovered under repos_root.
+# Useful for repos that live outside repos_root, or to give them friendlier names.
+# [[code_search.repos]]
+# name = "my-service"
+# path = "/absolute/path/to/my-service"
+#
+# [[code_search.repos]]
+# name = "shared-lib"
+# path = "/absolute/path/to/shared-lib"
+
+# ---------------------------------------------------------------------------
+# Skills — folders with a SKILL.md plus optional bundled files and scripts/.
+# Rye-owned skills live in ~/.local/share/rye/skills/<name>/ (editable in the app).
+# `dirs` lists READ-ONLY roots of installed skills (the `skills` CLI installs to
+# ~/.agents/skills). Rye never modifies or deletes anything in these roots;
+# install/remove goes through `bunx skills`. A Rye-owned skill wins over an
+# installed one with the same name. Scripts under scripts/ only run after you
+# approve each run.
+# RYE_SKILLS_DIRS (comma-separated, ~ expanded)
+# ---------------------------------------------------------------------------
+[skills]
+dirs = ["~/.agents/skills"]
+
+# ---------------------------------------------------------------------------
+# AWS CloudWatch
+# RYE_AWS_REGION, RYE_AWS_PROFILE, RYE_AWS_ACCESS_KEY_ID,
+# RYE_AWS_SECRET_ACCESS_KEY
+# ---------------------------------------------------------------------------
+[aws]
+region = "us-east-1"
+# profile = "my-aws-profile"       # named profile from ~/.aws/credentials
+# access_key_id = ""               # explicit creds (prefer profile or IAM role)
+# secret_access_key = ""
+
+# ---------------------------------------------------------------------------
+# MySQL (read-only)
+# RYE_MYSQL_HOST, RYE_MYSQL_PORT, RYE_MYSQL_USER, RYE_MYSQL_PASSWORD,
+# RYE_MYSQL_DATABASE
+# ---------------------------------------------------------------------------
+[mysql]
+host = "localhost"
+port = 3306
+user = "root"
+password = ""
+database = ""
+read_only = true                              # always enforced; do not change
+
+# ---------------------------------------------------------------------------
+# Jira
+# RYE_JIRA_URL, RYE_JIRA_EMAIL, RYE_JIRA_API_TOKEN, RYE_JIRA_PROJECT_KEYS
+# ---------------------------------------------------------------------------
+[jira]
+url = ""                                      # e.g. https://your-org.atlassian.net
+email = ""                                    # Atlassian account email
+api_token = ""                                # https://id.atlassian.com/manage-profile/security/api-tokens
+project_keys = []                             # e.g. ["OPS", "PLAT"]
+
+# ---------------------------------------------------------------------------
+# Git / Bitbucket (remote search — Phase 2)
+# RYE_GIT_BITBUCKET_URL, RYE_GIT_BITBUCKET_TOKEN,
+# RYE_GIT_DEFAULT_WORKSPACE
+# ---------------------------------------------------------------------------
+[git]
+bitbucket_url = ""
+bitbucket_token = ""
+default_workspace = ""
+
+# ---------------------------------------------------------------------------
+# Environments
+# Define named environments to let the agent switch connectors at runtime.
+# Each environment can override any subset of [mysql], [aws], [jira], [git].
+# The active environment is persisted to ~/.local/share/rye/active-env.
+# The agent can switch via the switch_env_tool, or use the UI picker.
+#
+# The base [mysql]/[aws]/[jira]/[git] sections above act as the "default"
+# environment (no overrides). For example, if your base config already points
+# to your semi/staging environment, you only need to add qa/prod overrides.
+# ---------------------------------------------------------------------------
+
+[environments.qa]
+name = "QA"                                   # optional display name for the UI
+
+[environments.qa.mysql]
+host = "qa-db.internal"
+port = 3306
+user = "readonly"
+password = "secret"
+database = "appdb"
+
+[environments.qa.aws]
+region = "us-east-1"
+profile = "qa"
+
+[environments.prod]
+name = "Production"
+
+[environments.prod.mysql]
+host = "prod-db.internal"
+port = 3306
+user = "readonly"
+password = "secret"
+database = "appdb"
+
+[environments.prod.aws]
+region = "us-east-1"
+profile = "prod"
