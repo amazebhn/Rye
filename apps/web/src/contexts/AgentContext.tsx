@@ -11,6 +11,7 @@ export interface AgentInput {
   model?: string | null;
   env?: string | null;
   tool_groups?: string[];
+  skip_base_prompt?: boolean;
 }
 
 export type AgentChattiness = "off" | "low" | "medium" | "high";

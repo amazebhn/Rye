@@ -11,6 +11,12 @@ import { autoSelectFastModel, autoSelectModel, autoSelectStrongModel } from "./c
 export async function resolveTierModelId(settings: Settings, tier: ModelTier): Promise<string> {
   const explicit = settings.models[tier].trim();
   if (explicit) return explicit;
+  // The Claude harness fills blank tiers ahead of any provider.
+  if (settings.harness === "claude") {
+    if (tier === "low") return "haiku";
+    if (tier === "high") return "opus";
+    return settings.claude.model || "sonnet";
+  }
   // Blank tiers auto-pick from the first (primary) provider.
   if (settings.llm_provider[0] !== "copilot") return settings.ollama.model;
   if (tier === "low") return autoSelectFastModel();

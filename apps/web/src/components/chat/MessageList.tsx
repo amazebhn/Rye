@@ -3,6 +3,7 @@ import React, {
   useEffect,
   useRef,
   useLayoutEffect,
+  useMemo,
   useState,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -14,8 +15,12 @@ import { formatModelName } from "../../utils/modelNames";
 import ActivityTimeline from "./ActivityTimeline";
 import PromptWidget from "./PromptWidget";
 import ChatLink from "./ChatLink";
+import CodeBlock from "./CodeBlock";
+import MarkdownTable from "./MarkdownTable";
+import { ChartSessionContext } from "./ChartBlock";
 import ArtifactCard, { artifactRefs } from "../artifacts/ArtifactCard";
 import TableFrame from "../shared/TableFrame";
+import ResultDataGrid from "../results/ResultDataGrid";
 import AgentAvatar from "../agents/AgentAvatar";
 import AgentHoverCard, { AgentMentionText } from "../agents/AgentHoverCard";
 import { useAgents } from "../../contexts/AgentContext";
@@ -53,6 +58,7 @@ function TypingIndicator() {
 const PROVIDER_NAMES: Record<string, string> = {
   "github-copilot": "GitHub Copilot",
   ollama: "Ollama",
+  claude: "Claude",
 };
 const STATUS_LABELS: Record<NonNullable<MessageMeta["status"]>, string> = {
   done: "Completed",
@@ -102,7 +108,8 @@ function errorInfo(error: string): ErrorInfo {
     };
   }
   if (/\b(401|403)\b|auth|unauthori[sz]ed|forbidden/i.test(error)) {
-    return { title: "Couldn't authenticate.", description: "Check that GitHub Copilot is signed in.", technical: error };
+    const service = /^Claude:|\/login/.test(error) ? "Claude Code" : "GitHub Copilot";
+    return { title: "Couldn't authenticate.", description: `Check that ${service} is signed in.`, technical: error };
   }
   if (/\b429\b|rate.?limit/i.test(error)) {
     return { title: "Rate limited.", description: "Try again in a moment.", technical: error };
@@ -448,8 +455,42 @@ function markdownTable(table: HTMLTableElement | null): string {
   ].join("\n");
 }
 
-function downloadMarkdown(contents: string, title?: string) {
-  const blob = new Blob([contents], { type: "text/markdown;charset=utf-8" });
+// A reply table opened full screen becomes the same grid stored results use: sortable, groupable, chartable.
+function MarkdownTableGrid({ tableRef }: { tableRef: React.RefObject<HTMLTableElement> }) {
+  const data = useMemo(() => {
+    const table = tableRef.current;
+    if (!table || table.rows.length === 0) return null;
+    const cells = Array.from(table.rows).map((row) => Array.from(row.cells).map((entry) => entry.textContent?.trim() ?? ""));
+    // Column names double as row keys, so repeats and blanks are made unique.
+    const seen = new Map<string, number>();
+    const columns = cells[0].map((name, index) => {
+      const base = name || `Column ${index + 1}`;
+      const count = seen.get(base) ?? 0;
+      seen.set(base, count + 1);
+      return count === 0 ? base : `${base} (${count + 1})`;
+    });
+    const rows = cells.slice(1).map((row) => Object.fromEntries(columns.map((column, index) => [column, row[index] ?? ""])));
+    return { columns, rows };
+    // The table's DOM is complete by the time full screen can be opened.
+  }, [tableRef]);
+  if (!data) return null;
+  return <ResultDataGrid columns={data.columns} rows={data.rows} />;
+}
+
+// The table as CSV, in the order it is currently sorted. Values a spreadsheet would run as a formula are quoted off.
+function csvTable(table: HTMLTableElement | null): string {
+  if (!table) return "";
+  const escape = (value: string) => {
+    const safe = /^[=+\-@\t\r]/.test(value) && Number.isNaN(Number(value)) ? `'${value}` : value;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
+  return Array.from(table.rows)
+    .map((row) => Array.from(row.cells).map((entry) => escape(entry.textContent?.trim() ?? "")).join(","))
+    .join("\n");
+}
+
+function downloadCsv(contents: string, title?: string) {
+  const blob = new Blob([contents], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -458,7 +499,7 @@ function downloadMarkdown(contents: string, title?: string) {
       ?.toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "") || "table";
-  anchor.download = `${filename}.md`;
+  anchor.download = `${filename}.csv`;
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -517,16 +558,14 @@ function WideTable({
         onCopy={() =>
           navigator.clipboard.writeText(markdownTable(tableRef.current))
         }
-        onDownload={() =>
-          downloadMarkdown(markdownTable(tableRef.current), title)
-        }
+        onDownload={() => downloadCsv(csvTable(tableRef.current), title)}
         copyLabel="Copy as Markdown"
-        downloadLabel="Download Markdown"
-        fullscreenContent={<table className="md-table-grid">{children}</table>}
+        downloadLabel="Download CSV"
+        fullscreenContent={<MarkdownTableGrid tableRef={tableRef} />}
       >
-        <table ref={tableRef} className="md-table-grid">
-          {children}
-        </table>
+        <div className="md-table-scroll">
+          <MarkdownTable tableRef={tableRef}>{children}</MarkdownTable>
+        </div>
       </TableFrame>
     </div>
   );
@@ -819,6 +858,7 @@ const ANSWER_COMPONENTS: Components = {
     return <WideTable title={typeof title === "string" ? title : undefined}>{children}</WideTable>;
   },
   a: ChatLink,
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
 };
 
 interface AssistantSegmentProps {
@@ -875,12 +915,14 @@ function AssistantSegment({
       />
       <div className="md-body">
         {(!failure || answer) && (
+          <ChartSessionContext.Provider value={sessionId}>
           <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkTableTitles]}
             components={ANSWER_COMPONENTS}
           >
             {answer + (streaming && !showTyping ? "▋" : "")}
           </ReactMarkdown>
+          </ChartSessionContext.Provider>
         )}
         {failure && <ErrorCard error={failure.error} onRetry={onRetry} />}
         {artifacts.length > 0 && (
@@ -1102,7 +1144,7 @@ export function Message({
               )}
             </>
           ))}
-        {!isUserMessage && replyMarkdown(msgs) && (
+        {!isUserMessage && !streaming && replyMarkdown(msgs) && (
           <button
             className="icon-btn copy"
             onClick={() => {

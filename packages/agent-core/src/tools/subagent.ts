@@ -2,7 +2,8 @@
  * Subagent tool — lets the main agent spawn up to 3 parallel focused subagents.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { runSubagents } from "../agent/subagent.js";
 
 export async function spawnSubagents(args: { tasks: string[] }, sessionId?: string): Promise<string> {

@@ -5,6 +5,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import { getSettings, type Settings } from "../config.js";
+import { stripTurnContext } from "../agent/turn-context.js";
 import { getRunContext } from "../run-context.js";
 import { UsageStore } from "../usage/store.js";
 import {
@@ -41,7 +42,7 @@ export function historyDigest(history: Message[], maxChars = HISTORY_MAX_CHARS):
     if (m.role === "user") {
       const text = typeof m.content === "string" ? m.content : m.content.map((c) => (c.type === "text" ? c.text : "")).join(" ");
       if (!text.trim()) continue;
-      line = `User: ${text}`;
+      line = `User: ${stripTurnContext(text)}`;
     } else if (m.role === "assistant") {
       const text = m.content.map((b) => (b.type === "text" ? b.text : "")).join(" ").trim();
       const tools = [...new Set(m.content.flatMap((b) => (b.type === "toolCall" ? [b.name] : [])))];

@@ -2,7 +2,8 @@
  * Memory tools — allow the agent to persist and recall facts across sessions.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { MemoryKind, MemoryStore } from "../memory/store.js";
 
 // ---------------------------------------------------------------------------

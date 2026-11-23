@@ -9,7 +9,8 @@ export interface ModelProvider {
 }
 
 const PROVIDERS: Array<ModelProvider & { test: RegExp }> = [
-  { id: "anthropic", name: "Anthropic", test: /claude/ },
+  // Bare family names are Claude Code aliases, listed when the Claude harness is on.
+  { id: "anthropic", name: "Anthropic", test: /claude|^(sonnet|opus|haiku|fable)\b/ },
   { id: "openai", name: "OpenAI", test: /^(gpt|o\d|chatgpt|codex)/ },
   { id: "google", name: "Google", test: /gemini|gemma/ },
   { id: "xai", name: "xAI", test: /grok/ },
@@ -65,6 +66,10 @@ export function formatModelName(id: string): string {
     const extras = lower.slice(1).filter((t) => t !== family && !VERSION.test(t)).map(titleWord);
     return ["Claude", family && titleWord(family), version, ...extras].filter(Boolean).join(" ") + formatTag(tag);
   }
+
+  // Claude Code aliases: "sonnet" → "Claude Sonnet", "opus[1m]" → "Claude Opus [1m]".
+  const alias = base.match(/^(sonnet|opus|haiku|fable)(\[.+\])?$/i);
+  if (alias) return `Claude ${titleWord(alias[1])}${alias[2] ? ` ${alias[2]}` : ""}`;
 
   // GPT: "gpt-4.1" → "GPT-4.1", "gpt-4o-mini" → "GPT-4o mini".
   if (lower[0] === "gpt" && tokens[1]) {

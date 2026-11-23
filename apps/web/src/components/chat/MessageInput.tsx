@@ -1,5 +1,7 @@
 import React from "react";
-import { Square, ArrowUp, Clock, Pencil, X } from "lucide-react";
+import { Square, ArrowUp, Clock, LoaderCircle, Mic, Pencil, X } from "lucide-react";
+import { useDictation } from "../../utils/useDictation";
+import DictationWave from "./DictationWave";
 import ModelSelect from "../shared/ModelSelect";
 import MentionComposer from "./MentionComposer";
 import { AgentMentionText } from "../agents/AgentHoverCard";
@@ -44,6 +46,12 @@ export default function MessageInput({
 }: Props) {
   const canSend = input.trim().length > 0;
   const sendDisabled = !canSend;
+  const dictation = useDictation();
+  const send = () => {
+    // Stop listening first (dropping an unfinished recording) so late words don't land in the emptied box.
+    dictation.stop(true);
+    onSend();
+  };
 
   const placeholder =
     loading && isViewingInflight
@@ -88,7 +96,7 @@ export default function MessageInput({
           <MentionComposer
             value={input}
             onChange={onInput}
-            onSend={onSend}
+            onSend={send}
             placeholder={placeholder}
             ariaLabel={promptPending === "question" ? "Answer Rye's question" : "Chat message"}
             autoFocusTrigger={!loading && !promptPending}
@@ -103,12 +111,27 @@ export default function MessageInput({
               />
             </div>
             <div className="input-box-actions-right">
+              {dictation.error && <span className="dictation-error" role="status">{dictation.error}</span>}
+              {dictation.listening && <DictationWave levels={dictation.levels} />}
+              {dictation.supported && (
+                <button
+                  type="button"
+                  className={`mic-btn${dictation.listening ? " mic-btn--on" : ""}${dictation.transcribing ? " mic-btn--busy" : ""}`}
+                  onClick={() => (dictation.listening ? dictation.stop() : dictation.start(input, onInput))}
+                  disabled={dictation.transcribing}
+                  aria-pressed={dictation.listening}
+                  aria-label={dictation.transcribing ? "Transcribing" : dictation.listening ? "Stop dictation" : "Dictate"}
+                  title={dictation.transcribing ? "Transcribing…" : dictation.listening ? "Stop and transcribe" : "Dictate"}
+                >
+                  {dictation.transcribing ? <LoaderCircle size={15} className="mic-btn-spinner" /> : <Mic size={15} />}
+                </button>
+              )}
               {isViewingInflight && loading && (
                 <button className="stop-btn" onClick={onStop} title="Stop current response" aria-label="Stop current response">
                   <Square size={10} fill="currentColor" strokeWidth={0} />
                 </button>
               )}
-              <button className="send-btn" onClick={() => onSend()} disabled={sendDisabled} aria-label={promptPending === "question" ? "Send answer" : "Send"}>
+              <button className="send-btn" onClick={send} disabled={sendDisabled} aria-label={promptPending === "question" ? "Send answer" : "Send"}>
                 <ArrowUp size={16} strokeWidth={2.25} />
               </button>
             </div>

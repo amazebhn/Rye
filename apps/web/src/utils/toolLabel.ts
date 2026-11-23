@@ -29,8 +29,12 @@ export function isToolError(tc: ToolCall): boolean {
 const titleCase = (s: string) =>
   s.split(/[_-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 
+// Tools the Claude harness runs itself; their names aren't Rye's snake_case.
+const HARNESS_TOOL_LABELS: Record<string, string> = { WebSearch: "Web search", WebFetch: "Fetch page" };
+
 // mcp__glean_default__search → "Glean · search"
 function genericLabel(name: string): string {
+  if (HARNESS_TOOL_LABELS[name]) return HARNESS_TOOL_LABELS[name];
   if (name.startsWith("mcp__")) {
     const rest = name.slice(5);
     const sep = rest.indexOf("__");

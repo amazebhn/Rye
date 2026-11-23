@@ -3,7 +3,8 @@
  * Uses Bun.spawnSync for ripgrep, falls back to pure TS glob+regex.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, basename, extname } from "node:path";
 import { settings } from "../config.js";

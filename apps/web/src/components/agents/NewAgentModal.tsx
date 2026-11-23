@@ -23,6 +23,9 @@ const TOOL_GROUP_OPTIONS = [
   { id: "skills", label: "Skills" },
 ];
 
+// Always loaded for regular agents; an agent that skips the base prompt only gets it when selected.
+const CORE_TOOL_GROUP = { id: "core", label: "Core (ask user, memory, knowledge, SOPs, skills)" };
+
 const AGENT_TEMPLATE = `## Role
 Describe what domain or system this agent owns and when it should be consulted.
 
@@ -62,6 +65,9 @@ interface Props {
   onSaved: (agent: AgentRecord) => void;
   onClose: () => void;
 }
+
+const MAX_EMBEDDED_AVATAR_BYTES = 400_000;
+const MAX_SERVED_AVATAR_BYTES = 8 * 1024 * 1024;
 
 export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
   const { agents, createAgent, updateAgent, refreshAgents } = useAgents();
@@ -129,11 +135,12 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
   );
   const [model, setModel] = useState<string>(initial?.model ?? "");
   const [toolGroups, setToolGroups] = useState<string[]>(initial?.tool_groups ?? []);
+  const [skipBasePrompt, setSkipBasePrompt] = useState(initial?.skip_base_prompt ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(
-    Boolean(initial?.model || (initial?.tool_groups.length ?? 0) > 0),
+    Boolean(initial?.model || (initial?.tool_groups.length ?? 0) > 0 || initial?.skip_base_prompt),
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const avatarPopoverRef = useRef<HTMLDivElement>(null);
@@ -151,11 +158,24 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
     setToolGroups((prev) => (prev.includes(id) ? prev.filter((g) => g !== id) : [...prev, id]));
   }
 
-  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 400_000) {
-      setError("Please choose an image smaller than 400 KB.");
+    if (file.size > MAX_SERVED_AVATAR_BYTES) {
+      setError("Please choose an image smaller than 8 MB.");
+      return;
+    }
+    // Small images are embedded in the agent record; larger ones are uploaded and served by URL.
+    if (file.size > MAX_EMBEDDED_AVATAR_BYTES) {
+      try {
+        const res = await fetch("/agents/avatars", { method: "POST", body: file });
+        const data = (await res.json()) as { url?: string; error?: string };
+        if (!res.ok || !data.url) throw new Error(data.error ?? `HTTP ${res.status}`);
+        setAvatar({ kind: "image", value: data.url });
+        setError(null);
+      } catch (err) {
+        setError(`Couldn't upload the image: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
     const reader = new FileReader();
@@ -181,6 +201,7 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
         avatar,
         model: model.trim() || null,
         tool_groups: toolGroups,
+        skip_base_prompt: skipBasePrompt,
       };
       const saved = initial
         ? await updateAgent(initial.id, payload)
@@ -415,26 +436,49 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
                   <span className="form-label" style={{ margin: 0 }}>Default model</span>
                   <ModelSelect value={model || undefined} onChange={(m) => setModel(m)} />
                   {model && (
-                    <button type="button" className="btn btn--ghost btn--sm" style={{ fontSize: 11 }} onClick={() => setModel("")}>
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--sm"
+                      // Match the model picker's 28px pill; modal buttons default to 36px.
+                      style={{ fontSize: 11, height: 28, padding: "0 10px", borderRadius: "var(--radius-pill)" }}
+                      onClick={() => setModel("")}
+                    >
                       Clear
                     </button>
                   )}
                 </div>
 
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={skipBasePrompt}
+                    onChange={(e) => setSkipBasePrompt(e.target.checked)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <span className="form-label" style={{ margin: 0, display: "block" }}>Skip Rye's base prompt</span>
+                    <span style={{ fontSize: 11, color: "var(--main-fg-faint)" }}>
+                      Uses less context: the agent gets only its own instructions and only the tools selected below.
+                    </span>
+                  </span>
+                </label>
+
                 <div>
                   <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
                     <span className="form-label" style={{ margin: 0 }}>
-                      Pre-loaded tools{" "}
+                      {skipBasePrompt ? "Tools" : "Pre-loaded tools"}{" "}
                       <span style={{ fontWeight: 400, color: "var(--main-fg-faint)" }}>
                         ({toolGroups.length} selected)
                       </span>
                     </span>
                     <span style={{ fontSize: 11, color: "var(--main-fg-faint)" }}>
-                      Loaded on turn 1; unselected tools still load on demand
+                      {skipBasePrompt
+                        ? "Only the selected tools are available to this agent"
+                        : "Loaded on turn 1; unselected tools still load on demand"}
                     </span>
                   </div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {TOOL_GROUP_OPTIONS.map((g) => {
+                    {(skipBasePrompt ? [CORE_TOOL_GROUP, ...TOOL_GROUP_OPTIONS] : TOOL_GROUP_OPTIONS).map((g) => {
                       const active = toolGroups.includes(g.id);
                       return (
                         <button

@@ -2,7 +2,8 @@
  * Git tools — git log and git blame via simple-git.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import simpleGit from "simple-git";
 import { basename } from "node:path";
 

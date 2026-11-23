@@ -25,6 +25,34 @@ describe("AgentStore", () => {
   });
 
   test(
+    "skip_base_prompt defaults off, persists, and is added to databases created before it existed",
+    withTempDir((dir) => {
+      const path = join(dir, "agents.db");
+      const store = new AgentStore(path);
+      const plain = store.create({ name: "Plain", instructions: "help" });
+      const lean = store.create({ name: "Lean", instructions: "help", skip_base_prompt: true });
+      expect(plain.skip_base_prompt).toBe(false);
+      expect(lean.skip_base_prompt).toBe(true);
+      // An update that doesn't mention the flag keeps it; one that does changes it.
+      expect(store.update(lean.id, { description: "terse" })?.skip_base_prompt).toBe(true);
+      expect(store.update(lean.id, { skip_base_prompt: false })?.skip_base_prompt).toBe(false);
+      store.close();
+
+      // Simulate an older database without the column.
+      const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+      const raw = new Database(path);
+      raw.exec("ALTER TABLE agents DROP COLUMN skip_base_prompt");
+      raw.close();
+      const reopened = new AgentStore(path);
+      try {
+        expect(reopened.get(plain.id)?.skip_base_prompt).toBe(false);
+      } finally {
+        reopened.close();
+      }
+    }),
+  );
+
+  test(
     "creates, updates, deduplicates slugs, resolves @mentions, and deletes agents",
     withTempDir((dir) => {
       const store = new AgentStore(join(dir, "agents.db"));

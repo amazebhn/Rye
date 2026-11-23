@@ -23,6 +23,7 @@ import { getSettings } from "../config.js";
 import type { Settings } from "../config.js";
 import { invalidateCopilotToken } from "../copilot-auth.js";
 import { apiKeyFor, models, resolveModel, type ResolvedModel } from "../llm-provider.js";
+import { isHarnessToolEvent, type HarnessToolEvent } from "../harness/claude-sdk.js";
 import { describeContentFilter, installCopilotFilterCapture } from "../copilot-filter.js";
 import { resolveTaskModelId } from "../model-tiers.js";
 import type { SOP } from "../sop/store.js";
@@ -39,6 +40,7 @@ import {
   groupsUsedInHistory,
   rememberToolGroups,
   resolveGroupNames,
+  toolsForExactGroups,
   toolsForGroups,
 } from "../tools/groups.js";
 import { ASK_USER_TOOL_NAME, normalizeAskUserArgs } from "../tools/ask-user.js";
@@ -49,7 +51,9 @@ import { OLD_TOOL_RESULT_MAX_CHARS, shrinkOldToolResults } from "./trim.js";
 import type { SOPStore } from "../sop/store.js";
 import type { SkillStore } from "../skill/store.js";
 import { MemoryStore } from "../memory/store.js";
+import { meaningfulTokens } from "../knowledge/store.js";
 import type { KnowledgeSearchHit, KnowledgeStore } from "../knowledge/store.js";
+import { attachTurnContext, buildTurnContext, previousUserText, shownChunkKeys, stripTurnContext } from "./turn-context.js";
 import type { AgentDefinition } from "../agents/store.js";
 import { UsageStore } from "../usage/store.js";
 import { estimateCost } from "../usage/pricing.js";
@@ -192,7 +196,13 @@ You have persistent memory across sessions. Use it proactively:
 - Call **forget_tool** to remove stale facts.
 Memories are automatically shown to you at the top of each session — you do not need to recall them manually.
 
+A user message may end with a \`<rye_context>\` block. Rye adds it, not the user: it carries the current time and sometimes knowledge-base notes matching the message. Use it as background and don't mention the block itself.
+
 Always format your responses in Markdown. Use tables, code blocks, and bullet lists where appropriate. Immediately precede every Markdown table with a short descriptive level-three heading (for example, \`### Rollout status\`) so the UI can use that heading as the table name.
+
+**Charts:** when numbers over time or across categories are clearer as a picture, add a fenced code block with the language \`chart\` holding one JSON object: \`{"type":"bar","title":"Errors by service","x":"service","y":["errors"],"data":[{"service":"checkout","errors":42}]}\`. \`type\` is bar, line, area or scatter; \`x\` and \`y\` name columns; optional \`"stacked":true\`, \`"horizontal":true\` (bar) and \`"unit":"ms"\`. To plot a stored result, give \`"result_id":"res_…"\` instead of \`data\` so the rows don't pass through the conversation. Use at most 8 series on one scale and keep inline \`data\` under about 50 rows. The UI draws the chart with a table view, so don't repeat the same numbers as a table.
+
+**Diagrams:** to show a flow, sequence, architecture, data model or timeline, add a fenced code block with the language \`mermaid\` (flowchart, sequenceDiagram, erDiagram, stateDiagram-v2, gantt). The UI draws it. Keep labels short and put any label containing punctuation in double quotes.
 
 Be concise — short paragraphs or bullets. Avoid lengthy preambles or restating the question. Lead with the answer.
 
@@ -205,19 +215,6 @@ Be concise — short paragraphs or bullets. Avoid lengthy preambles or restating
 The code runs as a JS function body receiving \`args\` (your declared parameters as an object) and must return a string. No imports — use built-in JS globals only. Examples: format a date in a given timezone, grep/filter a multiline string, convert a JSON blob to a readable table.
 
 **MCP server creation** (admin group): When the user asks to add or configure an MCP server, call **add_mcp_server_tool** with either a stdio command or a remote URL. For a remote server using OAuth, set \`auth="oauth"\`; Rye will provide an authorization link after installation. Never put literal secrets in the configuration; use \`\${ENV_VAR}\` references. The tool automatically pauses and shows the exact configuration and risks to the user. Do not separately call ask_user_tool for this operation.`;
-
-/** Pointers to the top SOP matches; the agent loads full text with load_sop_tool. */
-function formatRelevantSops(sops: SOP[]): string {
-  const lines = sops.map((s) => {
-    const hint = s.description?.trim() || s.content.replace(/^#+\s.*/gm, "").replace(/\s+/g, " ").trim().slice(0, 100);
-    return `- [id ${s.id}] **${s.title}**${hint ? ` — ${hint}` : ""}`;
-  });
-  return (
-    `## Possibly relevant SOPs\n` +
-    `These look relevant to the user's message. Call load_sop_tool with the id to read one before following it.\n` +
-    lines.join("\n")
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Model resolution
@@ -517,7 +514,7 @@ async function summarizeMessages(
   // Render the messages to plain text for the summarizer
   const transcript = messages
     .map((m) => {
-      if (m.role === "user") return `USER: ${m.content}`;
+      if (m.role === "user") return `USER: ${typeof m.content === "string" ? stripTurnContext(m.content) : m.content}`;
       if (m.role === "assistant") {
         const blocks = (m as AssistantMessage).content ?? [];
         const text = blocks
@@ -694,9 +691,12 @@ export async function* runAgent(
   // Selection may call the decision model, so it runs alongside the SOP search.
   const toolGroups = getToolGroups();
   const optionalGroups = toolGroups.filter((g) => g.id !== CORE_GROUP);
+  // A low-context agent (skip_base_prompt) gets only its own instructions and exactly the tool groups
+  // chosen for it: no automatic core group, no group selection, no on-demand loading.
+  const leanAgent = agent?.skip_base_prompt === true;
   const groupSelection = Promise.resolve()
     .then(() =>
-      getToolGroupSelector()({
+      leanAgent ? [] : getToolGroupSelector()({
         userMessage,
         history,
         availableGroups: optionalGroups,
@@ -713,33 +713,49 @@ export async function* runAgent(
       },
     );
 
-  // Retrieve relevant SOPs and Knowledge Base chunks in parallel with tool group selection
-  const knowledgeSearch: Promise<KnowledgeSearchHit[]> = knowledgeStore
-    ? knowledgeStore.search(userMessage, { limit: 4, agentId: agent?.id }).catch((err) => {
-        log("warn", "Knowledge search failed, continuing without RAG", err);
-        return [];
-      })
-    : Promise.resolve([]);
+  // A low-context agent only sees Rye's stores (memory, knowledge, SOPs, skills) if it was given the core tools.
+  const usesStores = !leanAgent || agent.tool_groups.includes(CORE_GROUP);
 
-  let relevantSops: SOP[];
-  try {
-    relevantSops = await sopStore.search(userMessage, 3);
-  } catch (err) {
-    log("warn", "SOP search failed, continuing without SOPs", err);
-    relevantSops = [];
-  }
+  // Look for knowledge-base notes matching this message, in parallel with tool group selection.
+  // A short follow-up ("and in prod?") is searched together with the message before it, and
+  // notes already shown in this conversation are not sent again.
+  const knowledgeQuery =
+    meaningfulTokens(userMessage).length === 0
+      ? ""
+      : meaningfulTokens(userMessage).length < 4
+        ? `${previousUserText(history).slice(-400)} ${userMessage}`.trim()
+        : userMessage;
+  const knowledgeSearch: Promise<KnowledgeSearchHit[]> =
+    knowledgeStore && usesStores && settings.context.auto_knowledge && knowledgeQuery
+      ? knowledgeStore
+          .searchForContext(knowledgeQuery, {
+            limit: 3,
+            agentId: agent?.id,
+            exclude: shownChunkKeys(history),
+            minSimilarity: settings.context.knowledge_min_similarity,
+          })
+          .catch((err) => {
+            log("warn", "Knowledge search failed, continuing without it", err);
+            return [];
+          })
+      : Promise.resolve([]);
+
   const [enabledGroups, relevantKnowledge] = await Promise.all([groupSelection, knowledgeSearch]);
   if (agent && agent.tool_groups.length > 0) {
     const { enabled } = resolveGroupNames(toolGroups, agent.tool_groups);
     for (const g of enabled) enabledGroups.add(g);
   }
-  rememberToolGroups(sessionId, enabledGroups);
-  log("info", `tool groups: core${enabledGroups.size ? `, ${[...enabledGroups].join(", ")}` : ""}`);
+  if (leanAgent && agent.tool_groups.includes(CORE_GROUP)) enabledGroups.add(CORE_GROUP);
+  if (!leanAgent) rememberToolGroups(sessionId, enabledGroups);
+  log("info", `tool groups: ${[...(leanAgent ? [] : [CORE_GROUP]), ...enabledGroups].join(", ") || "none"}${leanAgent ? " (low-context agent)" : ""}`);
 
-  let systemPrompt = BASE_SYSTEM_PROMPT;
+  const skipBase = leanAgent;
+  let systemPrompt = skipBase ? "" : BASE_SYSTEM_PROMPT;
   if (agent) {
     const desc = agent.description ? `\n_${agent.description}_\n` : "\n";
-    systemPrompt += `\n\n---\n## Active Agent Persona: ${agent.name} (@${agent.slug})${desc}\nFollow these specialized instructions for this conversation while still adhering to Rye's evidence and tool-use discipline:\n\n${agent.instructions}`;
+    systemPrompt += skipBase
+      ? `You are ${agent.name} (@${agent.slug}).${desc}\n${agent.instructions}`
+      : `\n\n---\n## Active Agent Persona: ${agent.name} (@${agent.slug})${desc}\nFollow these specialized instructions for this conversation while still adhering to Rye's evidence and tool-use discipline:\n\n${agent.instructions}`;
 
     // Resolve explicit [[sop:id|title]], [[skill:name]], and [[knowledge:id|title]] tags pinned in instructions
     const pinnedNotes: string[] = [];
@@ -747,7 +763,6 @@ export async function* runAgent(
       const sopId = Number(m[1]);
       const sop = sopStore.get(sopId);
       if (sop) {
-        if (!relevantSops.some((s) => s.id === sop.id)) relevantSops.unshift(sop);
         pinnedNotes.push(`- **SOP [id ${sop.id}] ${sop.title}** — call \`load_sop_tool(id=${sop.id})\` when relevant.`);
       }
     }
@@ -774,19 +789,25 @@ export async function* runAgent(
       systemPrompt += `\n\n### Referenced Resources for ${agent.name}\n${pinnedNotes.join("\n")}`;
     }
   }
-  if (optionalGroups.length > 0) {
+  if (optionalGroups.length > 0 && !leanAgent) {
     systemPrompt += `\n\n**More tools:** only some tool groups are loaded. If you need a tool you don't have, call load_tools_tool with its group, then use it on your next step. Groups: ${formatGroupList(toolGroups)}.`;
   }
 
-  if (mcpConfigDecision) {
-    systemPrompt += `\n\n---\n**MCP configuration result:** ${mcpConfigDecision}\nReport this result clearly to the user.`;
+  if (model.provider === "claude" && (!leanAgent || enabledGroups.size > 0)) {
+    // Under the Claude harness Rye's tools are MCP tools, so their names differ from the ones used above.
+    systemPrompt +=
+      "\n\n**Tool names:** the tools named above appear to you with an `mcp__rye__` prefix." +
+      // ask_user_tool is a core tool, which a low-context agent only has when it was selected.
+      (!leanAgent || enabledGroups.has(CORE_GROUP)
+        ? " `mcp__rye__ask_user_tool` forwards questions and permission requests to the user, who may not see them otherwise, " +
+          "so use it whenever you need their input or approval."
+        : "") +
+      (settings.claude.web_tools ? " Use WebSearch and WebFetch when you need current or external information." : "");
   }
 
-  // Inject current datetime and timezone so the agent can reason about time
-  const now = new Date();
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const localTime = now.toLocaleString("en-US", { timeZone: tz, hour12: false, weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  systemPrompt += `\n\n---\nCurrent date/time: ${localTime} (${tz}) — UTC: ${now.toISOString()}`;
+  // Everything below goes in the system prompt and so should only change when the user changes
+  // something (an environment switch, a saved memory, a new SOP). What changes every turn (the
+  // time, knowledge found for this message) is attached to the user message instead; see turn-context.ts.
 
   // Inject active environment context
   const effectiveSettings = getEffectiveSettings();
@@ -800,20 +821,14 @@ export async function* runAgent(
   }\nThis is authoritative: all connector tools in this chat already use it, and the user can change it between turns from the UI. Do not call switch_env_tool for the environment that is already active; only call it when the user asks for a different one.\nAvailable environments: ${availableEnvKeys.join(", ")}`;
 
   // Inject saved memories first so the agent treats them as ground truth
-  const memoryBlock = memoryStore.formatForPrompt(agent?.id);
+  const memoryBlock = usesStores ? memoryStore.formatForPrompt(agent?.id, settings.context.memory_budget_tokens) : "";
   if (memoryBlock) {
-    log("info", `injecting ${memoryStore.all(agent ? { agentId: agent.id } : undefined).length} memory item(s)`);
+    log("info", `injecting saved memories (~${Math.ceil(memoryBlock.length / 4)} tokens)`);
     systemPrompt += `\n\n---\n${memoryBlock}`;
   }
 
-  // Inject top-K relevant knowledge chunks retrieved via hybrid RAG
-  if (knowledgeStore && relevantKnowledge.length > 0) {
-    log("info", `injecting ${relevantKnowledge.length} RAG knowledge hit(s)`);
-    systemPrompt += `\n\n---\n${knowledgeStore.formatHitsForPrompt(relevantKnowledge)}`;
-  }
-
   // Inject the skill index (progressive disclosure — full content loaded on demand)
-  if (skillStore) {
+  if (skillStore && usesStores) {
     const skillIndex = skillStore.formatIndexForPrompt();
     if (skillIndex) {
       log("info", `injecting skill index (${skillStore.list().length} skill(s))`);
@@ -822,25 +837,27 @@ export async function* runAgent(
   }
 
   // Always list every SOP so newer ones aren't invisible when semantic search misses.
-  const sopIndex = sopStore.formatIndexForPrompt();
+  const sopIndex = usesStores ? sopStore.formatIndexForPrompt() : "";
   if (sopIndex) {
     log("info", `injecting SOP index (${sopStore.list().length} SOP(s))`);
     systemPrompt += `\n\n---\n${sopIndex}`;
   }
 
-  if (relevantSops.length > 0) {
-    log("info", `pointing to ${relevantSops.length} relevant SOP(s)`);
-    systemPrompt += `\n\n---\n${formatRelevantSops(relevantSops)}`;
-  }
-
   if (systemPromptSuffix) {
     systemPrompt += `\n\n---\n${systemPromptSuffix}`;
   }
+  // The fingerprint should repeat from turn to turn; when it doesn't, the provider's prompt cache was lost.
+  log("info", `system prompt ~${Math.ceil(systemPrompt.length / 4)} tokens, fingerprint ${Bun.hash(systemPrompt).toString(36)}`);
 
-  // Append the new user message
+  // Append the new user message, with this turn's context after the user's own text.
+  if (relevantKnowledge.length > 0) log("info", `attaching ${relevantKnowledge.length} knowledge note(s) to the message`);
+  const turnContext = buildTurnContext({
+    notes: mcpConfigDecision ? [`**MCP configuration result:** ${mcpConfigDecision}\nReport this result clearly to the user.`] : [],
+    knowledge: knowledgeStore ? knowledgeStore.formatHitsForPrompt(relevantKnowledge) : "",
+  });
   const newUserMessage: TaggedMessage = {
     role: "user",
-    content: userMessage,
+    content: attachTurnContext(userMessage, turnContext),
     timestamp: Date.now(),
     ...(turnId ? { turnId } : {}),
   };
@@ -849,9 +866,11 @@ export async function* runAgent(
   const context: Context = {
     systemPrompt,
     messages,
-    tools: toolsForGroups(toolGroups, enabledGroups),
+    tools: leanAgent ? toolsForExactGroups(toolGroups, enabledGroups) : toolsForGroups(toolGroups, enabledGroups),
   };
   const enableGroups = (ids: string[]) => {
+    // A low-context agent's tool set is fixed.
+    if (leanAgent) return;
     const added = ids.filter((id) => id !== CORE_GROUP && !enabledGroups.has(id));
     if (added.length === 0) return;
     added.forEach((id) => enabledGroups.add(id));
@@ -933,7 +952,8 @@ export async function* runAgent(
 
     streamAttempt: while (true) {
       try {
-        s = models.stream(model, requestContext, { apiKey, signal });
+        // The Claude harness keeps one live SDK session per chat, found by this id.
+        s = models.stream(model, requestContext, { apiKey, signal, ...(model.provider === "claude" ? { sessionId } : {}) });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log("error", `stream() threw synchronously: ${msg}`);
@@ -943,9 +963,26 @@ export async function* runAgent(
 
       let emittedTokens = false;
       let authErr: string | null = null;
+      let harnessToolsRunning = 0;
 
       try {
         for await (const event of s) {
+          // Tools the harness ran itself (Claude Code's web search and fetch) show up as ordinary tool steps.
+          if (isHarnessToolEvent(event as { type: string })) {
+            const tool = event as unknown as HarnessToolEvent;
+            emittedTokens = true;
+            if (tool.type === "harness_tool_start") {
+              harnessToolsRunning++;
+              yield { type: "tool_start", name: tool.name, args: tool.args };
+            } else {
+              harnessToolsRunning = Math.max(0, harnessToolsRunning - 1);
+              yield { type: "tool_result", name: tool.name, content: tool.isError ? `Error: ${tool.content}` : tool.content };
+              // The model carries on in the same stream. Close the step the way a Rye tool round does, so the
+              // text before the call files under it and what comes next streams in as a fresh part of the reply.
+              if (harnessToolsRunning === 0) yield { type: "iter_start" };
+            }
+            continue;
+          }
           const ev = event as AssistantMessageEvent;
           if (ev.type === "text_delta") {
             emittedTokens = true;

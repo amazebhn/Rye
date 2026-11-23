@@ -2,7 +2,8 @@
  * Agent authoring tool — lets the AI Editor create or update custom agents.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { AgentStore } from "../agents/store.js";
 
 export const agentTools: Tool[] = [

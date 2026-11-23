@@ -3,7 +3,8 @@
  * Uses mysql2/promise (CommonJS-compatible, works under Bun).
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { Connection } from "mysql2/promise";
 import { getEffectiveSettings } from "../config.js";
 import { storeOrInline } from "../results/query.js";

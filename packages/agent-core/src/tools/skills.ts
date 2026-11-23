@@ -1,6 +1,7 @@
 /** Skill tools: load/save SKILL.md playbooks, read bundled files, run bundled scripts (approval-gated). */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { SkillError } from "../skill/fs-safe.js";
 import { legacyIdToName } from "../skill/migrate.js";
 import { RUN_SKILL_SCRIPT_TOOL_NAME } from "../skill/runner.js";

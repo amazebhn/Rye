@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Download, X } from "lucide-react";
 import type { Artifact } from "../../utils/types";
+import CodeBlock from "../chat/CodeBlock";
+import { ChartSessionContext } from "../chat/ChartBlock";
 import { ArtifactIcon, CopyArtifactButton, OpenInBrowserLink, artifactUrl, fetchArtifactContent, formatBytes } from "./ArtifactCard";
 
 const MAX_CSV_ROWS = 2000;
@@ -60,7 +62,11 @@ function Preview({ format, text }: { format: Artifact["format"]; text: string })
       <div className="md-body artifact-sheet-md">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          components={{ a: ({ children, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer">{children}</a> }}
+          components={{
+            a: ({ children, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer">{children}</a>,
+            // Same code blocks as chat replies, so a ```chart block in a document is drawn.
+            pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+          }}
         >
           {text}
         </ReactMarkdown>
@@ -181,7 +187,9 @@ export default function ArtifactSheet({ id, sessionId, version: initialVersion, 
         ) : content === null || !meta ? (
           <p className="artifact-sheet-state">Loading…</p>
         ) : (
-          <Preview format={meta.format} text={content} />
+          <ChartSessionContext.Provider value={sessionId}>
+            <Preview format={meta.format} text={content} />
+          </ChartSessionContext.Provider>
         )}
       </div>
     </aside>

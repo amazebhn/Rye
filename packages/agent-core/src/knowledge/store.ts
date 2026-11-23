@@ -47,7 +47,32 @@ export interface KnowledgeSearchHit {
   snippet: string;
   score: number;
   match_type: "hybrid" | "semantic" | "keyword";
+  /** Row id of the matched chunk; `${doc_id}#${chunk_id}` identifies it in a conversation. */
+  chunk_id: number;
+  /** Cosine similarity to the query, when both sides had an embedding. */
+  similarity: number | null;
+  /** How many distinct meaningful query words appear in the chunk. */
+  keyword_terms: number;
+  /**
+   * Median similarity of the query to every chunk: what "unrelated" scores for
+   * this query and embedding model. Null when too few chunks to tell.
+   */
+  background_similarity: number | null;
 }
+
+export interface ContextSearchOptions {
+  limit?: number;
+  agentId?: string | null;
+  /** Chunk keys (`doc_id#chunk_id`) already shown in this conversation. */
+  exclude?: Iterable<string>;
+  /**
+   * Similarity that is enough on its own while the knowledge base is too small
+   * to tell what "unrelated" scores. Depends on the embedding model.
+   */
+  minSimilarity?: number;
+}
+
+export const chunkKey = (hit: Pick<KnowledgeSearchHit, "doc_id" | "chunk_id">): string => `${hit.doc_id}#${hit.chunk_id}`;
 
 export interface Chunk {
   heading: string;
@@ -126,18 +151,53 @@ export function chunkMarkdown(
   return chunks;
 }
 
-/** Build a safe FTS5 MATCH query from arbitrary user text. */
-function buildFtsQuery(raw: string): string | null {
-  const tokens = raw
+/** Words that say nothing about the topic; matching on them only adds noise. */
+const STOPWORDS = new Set(
+  (
+    "a about after again all also am an and any are as at be because been before being but by can could did do does doing " +
+    "done down for from get got had has have having he her here him his how i if in into is it its just like me more most my " +
+    "need no not now of off on once one only or other our out over please same she should so some such than thanks thank that " +
+    "the their them then there these they this those to too up us use very want was we were what when where which while who " +
+    "why will with would yes yeah ok okay sure you your can't don't it's i'm let lets make show tell give look check see"
+  ).split(" "),
+);
+
+const tokenise = (raw: string): string[] =>
+  raw
     .toLowerCase()
     .replace(/[^a-z0-9_]+/g, " ")
     .trim()
     .split(/\s+/)
     .filter((t) => t.length >= 2);
-  if (tokens.length === 0) return null;
-  const unique = [...new Set(tokens)].slice(0, 12);
-  return unique.map((t) => `"${t}"`).join(" OR ");
+
+/** Distinct topic-bearing words of a query, most 12. */
+export function meaningfulTokens(raw: string): string[] {
+  return [...new Set(tokenise(raw).filter((t) => !STOPWORDS.has(t)))].slice(0, 12);
 }
+
+/** Build a safe FTS5 MATCH query from arbitrary user text. */
+function buildFtsQuery(raw: string): string | null {
+  const tokens = meaningfulTokens(raw);
+  if (tokens.length === 0) return null;
+  return tokens.map((t) => `"${t}"`).join(" OR ");
+}
+
+// Gate for showing a chunk unasked (searchForContext). Raw cosine similarity means
+// different things per embedding model (nomic-embed-text scores unrelated text around
+// 0.35-0.5), so the main test is how far a chunk stands out from the background.
+const DEFAULT_CONTEXT_MIN_SIMILARITY = 0.5;
+/** Chunks needed before the median similarity is a usable background level. */
+const MIN_CHUNKS_FOR_BACKGROUND = 5;
+/** How far above the background a chunk must score on similarity alone. */
+const STANDOUT_MARGIN = 0.08;
+/** ...and when it also shares a keyword with the query. */
+const KEYWORD_BACKED_MARGIN = 0.05;
+
+const median = (values: number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
 
 export class KnowledgeStore {
   private db: Database;
@@ -370,6 +430,8 @@ export class KnowledgeStore {
     const byId = new Map(chunkRows.map((r) => [Number(r.id), r]));
 
     const vecRank = new Map<number, number>();
+    const similarity = new Map<number, number>();
+    const queryTokens = meaningfulTokens(trimmed);
     const queryEmbed = await this.embedTextFn(trimmed);
     if (queryEmbed) {
       const scoredVec: Array<{ id: number; sim: number }> = [];
@@ -378,6 +440,7 @@ export class KnowledgeStore {
         const vec = blobToFloat32(row.embedding);
         if (vec.length !== queryEmbed.vector.length) continue;
         const sim = cosineSimilarity(queryEmbed.vector, vec);
+        similarity.set(Number(row.id), sim);
         if (sim >= MIN_SEMANTIC_SIMILARITY) {
           scoredVec.push({ id: Number(row.id), sim });
         }
@@ -407,6 +470,7 @@ export class KnowledgeStore {
     }
 
     fused.sort((a, b) => b.score - a.score);
+    const background = similarity.size >= MIN_CHUNKS_FOR_BACKGROUND ? median([...similarity.values()]) : null;
 
     const perDocCount = new Map<string, number>();
     const hits: KnowledgeSearchHit[] = [];
@@ -415,7 +479,12 @@ export class KnowledgeStore {
       const seen = perDocCount.get(row.doc_id) ?? 0;
       if (seen >= maxPerDoc) continue;
       perDocCount.set(row.doc_id, seen + 1);
+      const words = new Set(tokenise(`${row.title} ${row.heading} ${row.content}`));
       hits.push({
+        chunk_id: item.id,
+        similarity: similarity.get(item.id) ?? null,
+        background_similarity: background,
+        keyword_terms: queryTokens.filter((t) => words.has(t)).length,
         doc_id: row.doc_id,
         title: row.title,
         category: row.category,
@@ -432,18 +501,45 @@ export class KnowledgeStore {
     return hits;
   }
 
-  /** Format retrieved knowledge hits for system prompt injection. */
+  /**
+   * Search on the agent's behalf, for notes to show it without being asked.
+   * Unlike `search`, this returns nothing rather than a weak match: a chunk
+   * must stand out from the rest of the knowledge base on similarity (by less
+   * if it also shares a keyword), or contain a good share of the query's words.
+   */
+  async searchForContext(query: string, opts: ContextSearchOptions = {}): Promise<KnowledgeSearchHit[]> {
+    const tokens = meaningfulTokens(query);
+    if (tokens.length === 0) return [];
+    const limit = opts.limit ?? 3;
+    const minSimilarity = opts.minSimilarity ?? DEFAULT_CONTEXT_MIN_SIMILARITY;
+    const exclude = new Set(opts.exclude ?? []);
+    const wantedTerms = Math.max(Math.min(2, tokens.length), Math.ceil(tokens.length / 3));
+
+    const candidates = await this.search(query, { limit: limit * 4, agentId: opts.agentId });
+    return candidates
+      .filter((h) => {
+        if (exclude.has(chunkKey(h))) return false;
+        if (h.keyword_terms >= wantedTerms) return true;
+        if (h.similarity === null) return false;
+        if (h.background_similarity === null) return h.similarity >= minSimilarity;
+        const standout = h.similarity - h.background_similarity;
+        return standout >= STANDOUT_MARGIN || (standout >= KEYWORD_BACKED_MARGIN && h.keyword_terms > 0);
+      })
+      .slice(0, limit);
+  }
+
+  /** Format retrieved knowledge hits to show the agent alongside a user message. */
   formatHitsForPrompt(hits: KnowledgeSearchHit[]): string {
     if (hits.length === 0) return "";
     const blocks = hits.map((h) => {
       const heading = h.heading ? ` > ${h.heading}` : "";
       const tags = h.tags.length > 0 ? ` [${h.tags.join(", ")}]` : "";
-      return `### ${h.title}${heading} _(id: ${h.doc_id}, ${h.category}${tags})_\n${h.snippet}`;
+      return `### ${h.title}${heading} _(${chunkKey(h)}, ${h.category}${tags})_\n${h.snippet}`;
     });
     return (
-      `## Relevant System Knowledge (RAG)\n` +
-      `Retrieved from the knowledge base for this message. Treat as known system context (verify live state with tools when investigating incidents). ` +
-      `Use \`get_knowledge_tool\` to read a full note or \`search_knowledge_tool\` to query more.\n\n` +
+      `## Knowledge base notes that may be relevant\n` +
+      `Saved earlier, so verify live state with tools before relying on them. ` +
+      `Use get_knowledge_tool with the id before the # to read a full note, or search_knowledge_tool to look for more.\n\n` +
       blocks.join("\n\n")
     );
   }

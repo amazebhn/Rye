@@ -3,7 +3,8 @@
  * durable system knowledge notes (architecture, service details, learnings).
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { KnowledgeStore } from "../knowledge/store.js";
 
 export const knowledgeTools: Tool[] = [

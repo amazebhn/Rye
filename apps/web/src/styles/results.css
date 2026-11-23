@@ -15,7 +15,7 @@
   padding: 6px 10px;
   background: var(--color-surface-alt);
   border-bottom: 1px solid var(--color-border);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-fg-muted);
 }
 
@@ -27,7 +27,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 12px;
   opacity: 0.7;
 }
 
@@ -41,7 +41,7 @@
 .result-table-grid {
   border-collapse: collapse;
   width: 100%;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .result-table-grid th {
@@ -67,7 +67,7 @@
 .result-table-text {
   margin: 0;
   padding: 8px 10px;
-  font-size: 11px;
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -79,7 +79,7 @@
   background: transparent;
   padding: 6px;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-accent);
   cursor: pointer;
 }
@@ -105,7 +105,7 @@
 }
 
 .result-table-note {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-fg-faint);
   padding: 6px 0;
 }
@@ -132,10 +132,12 @@
   background: var(--main-surface);
 }
 
+/* Controls sit together on the left; the row count and Chart go to the right edge. */
 .result-data-summary {
-  margin-right: auto;
+  order: 9;
+  margin-left: auto;
   color: var(--main-fg-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -145,7 +147,7 @@
   align-items: center;
   gap: 5px;
   color: var(--main-fg-faint);
-  font-size: 10px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -159,7 +161,7 @@
   background: var(--main-bg);
   color: var(--main-fg);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .result-data-control select:focus-visible {
@@ -176,8 +178,18 @@
   background: var(--main-bg);
   color: var(--main-fg-muted);
   font: inherit;
-  font-size: 10px;
+  font-size: 12px;
   cursor: pointer;
+}
+
+.result-data-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.result-data-toggle--icon {
+  justify-content: center;
+  padding: 0 7px;
 }
 
 .result-data-toggle:hover,
@@ -204,12 +216,96 @@
   color: var(--main-accent);
 }
 
+/* Search box in the grid toolbar: filters rows on any column. */
+.result-data-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-xs);
+  background: var(--main-bg);
+  color: var(--main-fg-faint);
+}
+.result-data-search:focus-within {
+  border-color: var(--main-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--main-accent) 18%, transparent);
+}
+.result-data-search input {
+  width: 150px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--main-fg);
+  font: inherit;
+  font-size: 12px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.result-data-search input::-webkit-search-decoration { -webkit-appearance: none; }
+
+/* Number columns stay left-aligned like the rest; equal-width digits keep them easy to compare. */
+.result-data-grid .result-data-cell.is-num { font-variant-numeric: tabular-nums; }
+
+/* Chart panel above the grid: column pickers, then the plot. */
+.result-data-chart-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  order: 10;
+  margin-left: 4px;
+}
+.result-chart {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--main-border);
+}
+.result-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+}
+.result-chart-series {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.result-chart-series-label {
+  margin-right: 2px;
+  color: var(--main-fg-faint);
+  font-size: 12px;
+}
+.result-chart-series .result-data-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.result-chart-body { padding: 4px 16px 12px; }
+.result-chart-empty {
+  padding: 28px 16px;
+  color: var(--main-fg-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .result-data-grid-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  /* No rubber-band past the ends: it drags the fixed heading row and row numbers out of place. */
+  overscroll-behavior: none;
 }
 
+/* The grid scrolls itself; a second scroller around it made the whole viewer bounce. */
+.table-fullscreen-content:has(> .result-data-grid) { overflow: hidden; }
+.table-fullscreen,
+.table-fullscreen-content { overscroll-behavior: none; }
+
+/* Fills the window, columns sharing the width. Everything is left-aligned, numbers
+   included, so each value sits directly under its heading however wide the column gets. */
 .result-data-grid .result-table-grid {
   width: max-content;
   min-width: 100%;
@@ -229,14 +325,15 @@
   height: 28px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  /* The arrow sits right after the name instead of at the far edge of the column. */
+  justify-content: flex-start;
+  gap: 6px;
   padding: 0 10px;
   border: 0;
   background: transparent;
   color: var(--main-fg-muted);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-align: left;
   cursor: pointer;
@@ -280,7 +377,7 @@
   border-right: 1px solid var(--main-border);
   background: var(--main-surface);
   color: var(--main-fg-faint);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -335,7 +432,7 @@
   border-bottom: 1px solid var(--main-border);
   background: color-mix(in srgb, var(--main-accent) 7%, var(--main-surface));
   color: var(--main-fg);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .result-data-group-row button {
@@ -374,7 +471,7 @@
 .result-data-group-row span {
   margin-left: 2px;
   color: var(--main-fg-faint);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .result-data-grid .result-table-more--fullscreen {
@@ -404,12 +501,12 @@
   gap: 2px;
   min-width: 0;
   color: var(--main-fg-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .result-data-inspector-meta strong {
   color: var(--main-fg);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .result-data-inspector-meta span {
@@ -441,7 +538,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--main-fg-faint);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -465,6 +562,14 @@
 
 .result-data-copy-cell:hover { background: var(--main-surface-alt); color: var(--main-fg); }
 .result-data-copy-cell:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+
+/* Narrow windows: the controls drop to their own line under the title instead of squeezing it. */
+@media (max-width: 900px) {
+  .table-fullscreen-header { flex-wrap: wrap; }
+  .table-fullscreen-title { flex: 1 1 0; }
+  .table-fullscreen-tools { order: 3; flex-basis: 100%; }
+  .result-data-toolbar.result-data-toolbar--header { flex-wrap: wrap; }
+}
 
 @media (max-width: 840px) {
   .result-data-toolbar {
@@ -551,27 +656,74 @@
 }
 
 .table-fullscreen-header {
-  height: 52px;
+  min-height: 56px;
   box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px 8px 18px;
+  padding: 10px 14px 10px 18px;
   border-bottom: 1px solid var(--main-border);
   background: var(--main-bg);
 }
 
 .table-fullscreen-title {
-  flex: 1;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 80px;
   display: flex;
   align-items: baseline;
   gap: 10px;
   overflow: hidden;
   color: var(--main-fg);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
+}
+
+/* The table's controls, drawn into the header by ResultDataGrid; takes whatever room the title leaves. */
+.table-fullscreen-tools {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+}
+.table-fullscreen-tools:empty { min-height: 1px; }
+
+/* In the header the toolbar is just a row of controls: no bar of its own. */
+.result-data-toolbar.result-data-toolbar--header {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  gap: 8px;
+}
+/* Row count sits beside the title; everything after it is pushed to the right, next to copy/download/close. */
+.result-data-toolbar--header .result-data-summary {
+  order: 0;
+  margin: 0 auto 0 4px;
+  color: var(--main-fg-faint);
+}
+.result-data-toolbar--header .result-data-chart-toggle {
+  order: 0;
+  margin-left: 0;
+}
+/* Slightly larger, softer controls than the compact in-chat toolbar. */
+.result-data-toolbar--header .result-data-search,
+.result-data-toolbar--header .result-data-control select,
+.result-data-toolbar--header .result-data-toggle {
+  height: 32px;
+  border-radius: var(--radius-sm);
+}
+.result-data-toolbar--header .result-data-search { padding: 0 10px; }
+.result-data-toolbar--header .result-data-search input { width: 190px; font-size: 13px; }
+.result-data-toolbar--header .result-data-control select { font-size: 13px; }
+.result-data-toolbar--header .result-data-toggle { padding: 0 10px; font-size: 13px; }
+.result-data-toolbar--header .result-data-sort-clear { height: 32px; font-size: 13px; }
+.table-fullscreen-header .table-frame-actions--fullscreen {
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--main-border);
+  border-radius: 0;
 }
 
 .table-fullscreen-title > span:first-child {
@@ -583,7 +735,7 @@
 .table-fullscreen-hint {
   flex-shrink: 0;
   color: var(--main-fg-faint);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
 }
 
@@ -657,8 +809,10 @@
   padding: 0;
 }
 
-.table-fullscreen-content .result-data-grid .result-data-row-number {
-  padding: 0 9px;
+/* Outranks the "th { padding: 0 }" rule above, which was flattening the row numbers against the border. */
+.table-fullscreen-content .result-data-grid .result-table-grid th.result-data-row-number,
+.result-data-grid .result-table-grid th.result-data-row-number {
+  padding: 0 10px 0 6px;
 }
 
 .table-fullscreen-content .result-data-grid .result-data-group-row td {

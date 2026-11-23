@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => {
         "/memory": { target: agentUrl, changeOrigin: true },
         "/knowledge": { target: agentUrl, changeOrigin: true, timeout: 60000, proxyTimeout: 60000 },
         "/agents": { target: agentUrl, changeOrigin: true },
+        "/speech": { target: agentUrl, changeOrigin: true, timeout: 130000, proxyTimeout: 130000 },
         "/usage": { target: agentUrl, changeOrigin: true },
         "/result": { target: agentUrl, changeOrigin: true },
         "/artifact": { target: agentUrl, changeOrigin: true },

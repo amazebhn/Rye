@@ -137,6 +137,32 @@ const CopilotSchema = z.object({
   model: z.string().default(""),
 });
 
+const ClaudeSchema = z.object({
+  // A Claude Code model alias ("sonnet", "opus", "haiku") or full model id.
+  model: z.string().default("sonnet"),
+  // Tokens; used for the context meter and for when Rye compacts its own saved history.
+  context_window: z.number().int().positive().default(200000),
+  // Let Claude use Claude Code's WebSearch and WebFetch tools.
+  web_tools: z.boolean().default(true),
+});
+
+// What Rye adds to the prompt from its own stores.
+const ContextSchema = z.object({
+  // Estimated tokens of saved memories shown every turn; older entries beyond it are listed by key only.
+  memory_budget_tokens: z.number().int().positive().default(3000),
+  // Show knowledge-base notes that match the user's message without the agent searching for them.
+  auto_knowledge: z.boolean().default(true),
+  // Embedding similarity (0-1) that is enough on its own for a note to be shown. Depends on the embedding model.
+  knowledge_min_similarity: z.number().min(0).max(1).default(0.5),
+});
+
+const SpeechSchema = z.object({
+  // Command that transcribes a dictation recording. {input} is the audio file and {output_dir} a
+  // scratch folder; the transcript is a .txt written there, or else the command's output.
+  // Blank: use mlx_whisper if it is installed.
+  stt_command: z.string().default(""),
+});
+
 const AWSSchema = z.object({
   region: z.string().default("us-east-1"),
   profile: z.string().optional(),
@@ -222,9 +248,16 @@ const LlmProviderSchema = z
   .transform((p) => (p === "github" ? "copilot" : p));
 export type LlmProvider = z.output<typeof LlmProviderSchema>;
 
+// What runs the model. "pi" is Rye's own loop over the llm_provider APIs. An
+// external harness takes precedence over llm_provider for the models it serves:
+// "claude" runs every Claude model through the Claude Agent SDK (Claude Code's login).
+export const HARNESSES = ["pi", "claude"] as const;
+export type Harness = (typeof HARNESSES)[number];
+
 const SettingsSchema = z.object({
   host: z.string().default("127.0.0.1"),
   port: z.number().int().default(7337),
+  harness: z.enum(HARNESSES).default("pi"),
   // One provider or several, e.g. ["github", "ollama"]. The first is the default
   // for blank model tiers; any listed provider's models can be picked.
   llm_provider: z
@@ -234,6 +267,9 @@ const SettingsSchema = z.object({
 
   ollama: OllamaSchema.default({}),
   copilot: CopilotSchema.default({}),
+  claude: ClaudeSchema.default({}),
+  context: ContextSchema.default({}),
+  speech: SpeechSchema.default({}),
   models: ModelsSchema.default({}),
   decision: DecisionSchema.default({}),
   aws: AWSSchema.default({}),
@@ -346,8 +382,17 @@ function applyEnvOverrides(raw: Record<string, unknown>): Record<string, unknown
   // Top-level
   maybe(str("RYE_HOST"), ["host"]);
   maybe(num("RYE_PORT"), ["port"]);
+  maybe(str("RYE_HARNESS"), ["harness"]);
   // Comma-separated for several providers, e.g. RYE_LLM_PROVIDER=github,ollama
   maybe(str("RYE_LLM_PROVIDER")?.split(",").map((p) => p.trim()).filter(Boolean), ["llm_provider"]);
+
+  // Context
+  maybe(num("RYE_CONTEXT_MEMORY_BUDGET_TOKENS"), ["context", "memory_budget_tokens"]);
+  maybe(bool("RYE_CONTEXT_AUTO_KNOWLEDGE"), ["context", "auto_knowledge"]);
+  maybe(num("RYE_CONTEXT_KNOWLEDGE_MIN_SIMILARITY"), ["context", "knowledge_min_similarity"]);
+
+  // Speech
+  maybe(str("RYE_SPEECH_STT_COMMAND"), ["speech", "stt_command"]);
 
   // Ollama
   maybe(str("RYE_OLLAMA_BASE_URL"), ["ollama", "base_url"]);
@@ -359,6 +404,11 @@ function applyEnvOverrides(raw: Record<string, unknown>): Record<string, unknown
   maybe(str("RYE_COPILOT_API_KEY"), ["copilot", "api_key"]);
   maybe(str("RYE_COPILOT_BASE_URL"), ["copilot", "base_url"]);
   maybe(str("RYE_COPILOT_MODEL"), ["copilot", "model"]);
+
+  // Claude harness
+  maybe(str("RYE_CLAUDE_MODEL"), ["claude", "model"]);
+  maybe(num("RYE_CLAUDE_CONTEXT_WINDOW"), ["claude", "context_window"]);
+  maybe(bool("RYE_CLAUDE_WEB_TOOLS"), ["claude", "web_tools"]);
 
   // Model tiers
   maybe(str("RYE_MODEL_LOW"), ["models", "low"]);
@@ -485,7 +535,8 @@ function loadSettings(): Settings {
   applyModelOverrides(s);
   // Apply the in-memory model override so UI selections persist across reloads.
   if (runtimeModelOverride) {
-    if (s.llm_provider[0] === "copilot") s.copilot.model = runtimeModelOverride;
+    if (s.harness === "claude") s.claude.model = runtimeModelOverride;
+    else if (s.llm_provider[0] === "copilot") s.copilot.model = runtimeModelOverride;
     else s.ollama.model = runtimeModelOverride;
   }
   return s;

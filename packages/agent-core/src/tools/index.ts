@@ -4,7 +4,7 @@
  */
 
 import type { Tool } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 import { codeSearchTools, listRepos, codeSearch, symbolSearch, stackTraceTool, logToSource, fileSearch } from "./code-search.js";
 import { awsTools, cloudwatchSearch, cloudwatchListLogGroups, rdsListInstances, ecsListClusters, ecsListServices, ecsDescribeService, ecsListTasks, ec2ListInstances, albListLoadBalancers, albTargetHealth, s3ListBuckets, s3ListObjects, s3ReadObject } from "./aws.js";

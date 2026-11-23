@@ -1,4 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useEffect, useRef, useState } from "react";
+
+/** Where a table shown full screen should draw its controls: a slot in the viewer's header bar. Null elsewhere. */
+export const TableToolbarSlot = createContext<HTMLElement | null>(null);
 import { createPortal } from "react-dom";
 import { Check, Copy, Download, Maximize2, X } from "lucide-react";
 
@@ -28,6 +31,7 @@ export default function TableFrame({
   onFullscreenClose,
 }: TableFrameProps) {
   const [fullscreen, setFullscreen] = useState(initialFullscreen);
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<number>();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -148,8 +152,9 @@ export default function TableFrame({
           <header className="table-fullscreen-header">
             <div className="table-fullscreen-title">
               {title && <span>{title}</span>}
-              <span className="table-fullscreen-hint">Esc to close</span>
             </div>
+            {/* The table's own controls (search, group, chart) are drawn here, so there is one bar, not two. */}
+            <div ref={setToolbarSlot} className="table-fullscreen-tools" />
             {actions(true)}
             <button
               type="button"
@@ -157,13 +162,16 @@ export default function TableFrame({
               className="table-frame-action table-fullscreen-close"
               onClick={closeFullscreen}
               aria-label="Close full-screen table"
-              title="Close"
+              title="Close (Esc)"
             >
               <X size={16} />
             </button>
           </header>
           <div className="table-fullscreen-content">
-            {fullscreenContent ?? children}
+            {/* Rendered once the header slot exists, so the controls never flash in the wrong place. */}
+            {toolbarSlot && (
+              <TableToolbarSlot.Provider value={toolbarSlot}>{fullscreenContent ?? children}</TableToolbarSlot.Provider>
+            )}
           </div>
         </div>,
         document.body,

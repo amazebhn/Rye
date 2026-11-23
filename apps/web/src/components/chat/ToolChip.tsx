@@ -47,7 +47,7 @@ export function toolStatus(tc: ToolCall, live: boolean, awaiting: boolean): Tool
 }
 
 function toolIcon(name: string): LucideIcon {
-  if (name.startsWith("mcp__")) return Globe;
+  if (name.startsWith("mcp__") || name === "WebSearch" || name === "WebFetch") return Globe;
   if (/^(mysql|result)_/.test(name)) return Database;
   if (/^(cloudwatch|rds|ecs|ec2|alb)_/.test(name)) return Cloud;
   if (name.startsWith("git_")) return GitBranch;

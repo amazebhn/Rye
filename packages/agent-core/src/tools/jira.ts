@@ -2,7 +2,8 @@
  * Jira tool — look up a Jira issue by key using the REST API v3.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { getEffectiveSettings } from "../config.js";
 
 // ---------------------------------------------------------------------------

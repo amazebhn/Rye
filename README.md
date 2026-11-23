@@ -7,7 +7,7 @@ Rye is an evidence-driven production support AI agent and workspace for investig
 - **Custom Agents**: Create specialist agents with custom Markdown instructions, profile images or gradients, default models, pre-loaded tool groups, and pinned SOP/Skill/Knowledge references. Each agent has a dedicated 1:1 chat and can be `@` mentioned inline in any generic chat (with hover contact cards, optional decision-model auto-routing, and configurable agent-to-agent chattiness).
 - **Two-Tier Memory & Hybrid RAG**:
   - **Facts & Glossary**: Compact, always-in-prompt table for ground-truth facts, acronyms, and custom domain terms.
-  - **Knowledge Base (RAG)**: Markdown notes chunked and indexed with hybrid **SQLite FTS5 + vector embeddings** (Ollama or GitHub Copilot, combined via Reciprocal Rank Fusion). Both users and agents (`save_knowledge_tool`) can save durable system knowledge.
+  - **Knowledge Base (RAG)**: Markdown notes chunked and indexed with hybrid **SQLite FTS5 + vector embeddings** (Ollama or GitHub Copilot, combined via Reciprocal Rank Fusion). Both users and agents (`save_knowledge_tool`) can save durable system knowledge. Notes that clearly match a message are attached to it automatically, once per conversation; the agent searches for anything else itself. Tune with the `[context]` section of `config.toml`.
 - **SOPs & Skills**: Author, import, and refine runbooks and reusable skills manually or with the built-in AI Editor.
 - **Infrastructure & Code Connectors**: Built-in tools for AWS (CloudWatch, ECS, EC2, RDS, ALB, S3), MySQL, Jira, Git/Bitbucket, local code search (`ripgrep`), custom tools, and MCP servers with per-environment switching.
 - **Web UI & CLI**: Local React web app with usage analytics, stored result tables, downloadable artifacts, and a companion CLI.
@@ -67,6 +67,15 @@ Edit `~/.config/rye/config.toml` to configure your LLM provider and connectors. 
   model = "" # leave blank to auto-select the newest Sonnet
   ```
 
+- **Claude (via the Claude Agent SDK)**:
+  ```toml
+  harness = "claude"   # takes precedence over llm_provider for Claude models
+
+  [claude]
+  model = "sonnet"     # Claude Code alias or full model id
+  ```
+  Uses Claude Code's sign-in on this machine (run `claude` and `/login` once) or `ANTHROPIC_API_KEY`. Claude models and blank model tiers run through the Agent SDK; other models and embeddings still use `llm_provider`. Claude can also search and fetch the web with Claude Code's built-in tools (`[claude] web_tools`, on by default).
+
 - **Decision Model (optional, for fast tool-group selection, auto-routing, and agent-to-agent replies)**:
   Configure `[decision]` in `config.toml` or directly from the **Settings** tab in the web app (`ollama`, `clef`, or `chat`).
 
@@ -110,6 +119,7 @@ Any config setting can be overridden via environment variables (priority: shell 
 - `RYE_HOST`, `RYE_PORT` — Server bind host/port (default `127.0.0.1:7337`)
 - `RYE_CONFIG_DIR`, `RYE_DATA_DIR` — Override config and data directories
 - `RYE_LLM_PROVIDER` — Provider(s), e.g. `ollama` or `github,ollama`
+- `RYE_HARNESS`, `RYE_CLAUDE_MODEL` — Harness (`pi` or `claude`) and its Claude model
 - `RYE_OLLAMA_BASE_URL`, `RYE_OLLAMA_MODEL`, `RYE_OLLAMA_EMBEDDING_MODEL`
 - `RYE_COPILOT_API_KEY`, `RYE_COPILOT_MODEL`
 - `RYE_DECISION_PROVIDER`, `RYE_DECISION_MODEL`

@@ -2,7 +2,8 @@
  * AWS tools — CloudWatch, RDS, ECS, EC2, ALB, S3.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   CloudWatchLogsClient,
   StartQueryCommand,

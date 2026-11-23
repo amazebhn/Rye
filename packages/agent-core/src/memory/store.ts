@@ -27,8 +27,13 @@ export interface Memory {
 
 /** Cap on a single memory value's length to keep the prompt bounded. */
 const MAX_VALUE_LEN = 2000;
-/** Cap on how many memories are injected into the system prompt. */
-const MAX_INJECTED = 100;
+/** Default cap, in estimated tokens, on the memories shown in the system prompt. */
+export const DEFAULT_MEMORY_BUDGET_TOKENS = 3000;
+/** How many left-out keys are named so the agent knows what else exists. */
+const MAX_OMITTED_KEYS = 40;
+
+/** Rough prompt cost of one entry: its text at ~4 chars per token plus list/table markup. */
+const entryTokens = (m: Memory): number => Math.ceil((m.key.length + m.value.length + m.tags.join(", ").length) / 4) + 6;
 
 /** Normalise a memory key so lookups/dedupe are case- and whitespace-insensitive. */
 function normaliseKey(key: string): string {
@@ -120,11 +125,26 @@ export class MemoryStore {
   /**
    * Format memories as a compact block for injection into the system prompt.
    * Splits acronyms & custom terms into a Glossary table, and groups facts by
-   * category underneath.
+   * category underneath. Entries are kept newest first until the token budget
+   * is spent; the rest are named by key so the agent can ask for them.
    */
-  formatForPrompt(agentId?: string | null): string {
-    const memories = this.all(agentId ? { agentId } : undefined).slice(0, MAX_INJECTED);
-    if (memories.length === 0) return "";
+  formatForPrompt(agentId?: string | null, budgetTokens = DEFAULT_MEMORY_BUDGET_TOKENS): string {
+    const everything = this.all(agentId ? { agentId } : undefined);
+    if (everything.length === 0) return "";
+
+    const memories: Memory[] = [];
+    const omitted: Memory[] = [];
+    let spent = 0;
+    for (const m of everything) {
+      const cost = entryTokens(m);
+      // Always show at least one entry, however large.
+      if (memories.length > 0 && spent + cost > budgetTokens) {
+        omitted.push(m);
+        continue;
+      }
+      spent += cost;
+      memories.push(m);
+    }
 
     const glossary = memories.filter((m) => m.kind === "acronym" || m.kind === "term");
     const facts = memories.filter((m) => m.kind === "fact");
@@ -160,6 +180,15 @@ export class MemoryStore {
         });
 
       blocks.push(`## Saved Facts\nGround-truth facts remembered from previous sessions:\n\n${sections.join("\n\n")}`);
+    }
+
+    if (omitted.length > 0) {
+      const keys = omitted.slice(0, MAX_OMITTED_KEYS).map((m) => `\`${m.key}\``).join(", ");
+      const more = omitted.length > MAX_OMITTED_KEYS ? `, and ${omitted.length - MAX_OMITTED_KEYS} more` : "";
+      blocks.push(
+        `_${omitted.length} older saved ${omitted.length === 1 ? "entry is" : "entries are"} not shown to save context: ${keys}${more}. ` +
+          `Call list_memories_tool to read them._`,
+      );
     }
 
     return blocks.join("\n\n");

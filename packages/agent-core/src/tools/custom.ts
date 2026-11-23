@@ -13,7 +13,8 @@
  * The agent MUST always call ask_user_tool between propose and install.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../config.js";

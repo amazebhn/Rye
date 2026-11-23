@@ -28,6 +28,7 @@ import { KnowledgeStore } from "./knowledge/store.js";
 import { knowledgeRoutes } from "./knowledge/routes.js";
 import { AgentStore, type AgentDefinition } from "./agents/store.js";
 import { agentRoutes } from "./agents/routes.js";
+import { speechRoutes } from "./speech/routes.js";
 import { readAgentSettings, chattinessPolicy } from "./agents/settings.js";
 import { pickAutoRoutedAgent, pickFollowUpAgent, type RecentTurn } from "./agents/router.js";
 import { ChatStore } from "./chat/store.js";
@@ -65,6 +66,7 @@ import { CLEF_MODELS, clefTarget, ollamaDecisionModelsOrEmpty, resolveDecisionMo
 import { getCopilotBearerToken } from "./copilot-auth.js";
 import { copilotFetch, fetchCopilotModels, readModelsCache, supportsChatCompletions } from "./copilot-models.js";
 import { fetchOllamaModels } from "./llm-provider.js";
+import { CLAUDE_MODEL_ALIASES, claudeHarnessInfo } from "./harness/claude-sdk.js";
 
 // ---------------------------------------------------------------------------
 // App bootstrap
@@ -181,9 +183,10 @@ app.get("/health", (c) => {
         ? "env"
         : "config/default";
   const model =
-    primary === "copilot" ? cfg.copilot.model : cfg.ollama.model;
+    cfg.harness === "claude" ? cfg.claude.model : primary === "copilot" ? cfg.copilot.model : cfg.ollama.model;
   return c.json({
     status: "ok",
+    harness: cfg.harness,
     provider: primary,
     providers: cfg.llm_provider,
     model,
@@ -742,6 +745,7 @@ app.delete("/memory/:key", (c) => {
 // Trailing slashes so list/create routes answer at /knowledge/ and /agents/ (matching /sop/ and /skill/).
 app.route("/knowledge/", knowledgeRoutes(knowledgeStore));
 app.route("/agents/", agentRoutes(agentStore));
+app.route("/speech/", speechRoutes());
 
 // ---------------------------------------------------------------------------
 // Connector status
@@ -850,9 +854,22 @@ async function checkLLM(cfg: ReturnType<typeof getSettings>, provider: LlmProvid
   }
 }
 
+/** Claude harness — Claude Code must start and be signed in. */
+async function checkClaudeHarness(): Promise<ConnectorStatus> {
+  try {
+    const { account } = await claudeHarnessInfo();
+    return account
+      ? { name: "Claude", ok: true }
+      : { name: "Claude", ok: false, error: "Claude Code isn't signed in. Run `claude` and use /login, or set ANTHROPIC_API_KEY." };
+  } catch (err) {
+    return { name: "Claude", ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 app.get("/status", async (c) => {
   const cfg = getEffectiveSettings();
   const results = await Promise.allSettled([
+    ...(cfg.harness === "claude" ? [checkClaudeHarness()] : []),
     ...cfg.llm_provider.map((p) => checkLLM(cfg, p)),
     checkMySQL(cfg.mysql),
     checkAWS(cfg.aws),
@@ -1182,6 +1199,15 @@ async function listProviderModels(cfg: ReturnType<typeof getSettings>, chatOnly:
   const models: string[] = [];
   const errors: string[] = [];
   let cachedAt: number | undefined;
+  // The Claude harness's models come first; it serves them ahead of any provider.
+  if (cfg.harness === "claude") {
+    try {
+      models.push(...(await claudeHarnessInfo()).models);
+    } catch (err) {
+      models.push(...CLAUDE_MODEL_ALIASES);
+      errors.push(`Claude: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   for (const provider of cfg.llm_provider) {
     if (provider === "copilot") {
       try {
@@ -1214,11 +1240,12 @@ app.get("/models", async (c) => {
   const { models, error, cachedAt } = await listProviderModels(cfg, false);
   if (current && !models.includes(current)) models.unshift(current);
   return c.json({
+    harness: cfg.harness,
     provider: cfg.llm_provider[0],
     providers: cfg.llm_provider,
     current,
     models,
-    auto: cfg.llm_provider[0] === "copilot" && !cfg.copilot.model,
+    auto: cfg.harness === "pi" && cfg.llm_provider[0] === "copilot" && !cfg.copilot.model,
     ...(error ? { error, stale: cachedAt !== undefined, cached_at: cachedAt } : {}),
   });
 });
@@ -1254,6 +1281,7 @@ async function modelSettingsPayload() {
   );
 
   return {
+    harness: cfg.harness,
     provider: cfg.llm_provider[0],
     providers: cfg.llm_provider,
     available,

@@ -599,6 +599,8 @@ export default function App() {
       env: agent.env ?? undefined,
       agentId: agent.id,
     };
+    // An agent's chat id is fixed, so a deleted chat comes back under the same id: stop treating it as deleted.
+    deletedChatIdsRef.current.delete(dedicated.id);
     setChats((prev) => normalizeChats([dedicated, ...prev]));
     switchToChat(dedicated);
   }

@@ -8,6 +8,7 @@ import {
   defaultToolGroupSelector,
   groupsUsedInHistory,
   resolveGroupNames,
+  toolsForExactGroups,
   toolsForGroups,
 } from "../src/tools/groups.js";
 
@@ -17,6 +18,23 @@ const optional = groups.filter((g) => g.id !== CORE_GROUP);
 
 const select = (userMessage: string, extra: Partial<Parameters<typeof defaultToolGroupSelector>[0]> = {}) =>
   defaultToolGroupSelector({ userMessage, history: [], availableGroups: optional, previouslyEnabled: [], ...extra });
+
+describe("toolsForExactGroups", () => {
+  const names = (enabled: string[]) => toolsForExactGroups(groups, enabled).map((t) => t.name);
+
+  test("a low-context agent gets only the groups picked for it", () => {
+    expect(names([])).toEqual([]);
+    expect(names(["jira"])).toEqual(["jira_ticket_tool"]);
+    // Unlike toolsForGroups, core is not added automatically.
+    expect(toolsForGroups(groups, ["jira"]).map((t) => t.name)).toContain("ask_user_tool");
+  });
+
+  test("core can be picked, but never brings load_tools_tool", () => {
+    const core = names([CORE_GROUP]);
+    expect(core).toContain("ask_user_tool");
+    expect(core).not.toContain(LOAD_TOOLS_TOOL_NAME);
+  });
+});
 
 describe("buildToolGroups", () => {
   test("every tool lands in exactly one group, plus load_tools_tool in core", () => {

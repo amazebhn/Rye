@@ -33,6 +33,8 @@ export interface AgentDefinition {
   model: string | null;
   env: string | null;
   tool_groups: string[];
+  /** Leave Rye's base system prompt out of this agent's turns; its instructions and tool definitions still apply. */
+  skip_base_prompt: boolean;
   chat_id: string | null;
   created_at: string;
   updated_at: string;
@@ -47,6 +49,7 @@ export interface CreateAgentInput {
   model?: string | null;
   env?: string | null;
   tool_groups?: string[];
+  skip_base_prompt?: boolean;
 }
 
 export interface UpdateAgentInput {
@@ -58,6 +61,7 @@ export interface UpdateAgentInput {
   model?: string | null;
   env?: string | null;
   tool_groups?: string[];
+  skip_base_prompt?: boolean;
   chat_id?: string | null;
 }
 
@@ -113,6 +117,11 @@ export class AgentStore {
         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+    // Added after the first release; older databases get the column here.
+    const columns = this.db.query("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === "skip_base_prompt")) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN skip_base_prompt INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   list(): AgentDefinition[] {
@@ -162,9 +171,9 @@ export class AgentStore {
     const toolGroups = (input.tool_groups ?? []).map((g) => g.trim()).filter(Boolean);
 
     this.db.run(
-      `INSERT INTO agents (id, slug, name, description, instructions, avatar_kind, avatar_value, model, env, tool_groups)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, slug, name, description, instructions, avatar.kind, avatar.value, model, env, JSON.stringify(toolGroups)],
+      `INSERT INTO agents (id, slug, name, description, instructions, avatar_kind, avatar_value, model, env, tool_groups, skip_base_prompt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, slug, name, description, instructions, avatar.kind, avatar.value, model, env, JSON.stringify(toolGroups), input.skip_base_prompt ? 1 : 0],
     );
     return this.get(id)!;
   }
@@ -184,15 +193,16 @@ export class AgentStore {
       input.tool_groups !== undefined
         ? input.tool_groups.map((g) => g.trim()).filter(Boolean)
         : existing.tool_groups;
+    const skipBasePrompt = input.skip_base_prompt ?? existing.skip_base_prompt;
     const chatId = input.chat_id !== undefined ? input.chat_id : existing.chat_id;
 
     this.db.run(
       `UPDATE agents
        SET slug = ?, name = ?, description = ?, instructions = ?,
            avatar_kind = ?, avatar_value = ?, model = ?, env = ?,
-           tool_groups = ?, chat_id = ?, updated_at = datetime('now')
+           tool_groups = ?, skip_base_prompt = ?, chat_id = ?, updated_at = datetime('now')
        WHERE id = ?`,
-      [slug, name, description, instructions, avatar.kind, avatar.value, model, env, JSON.stringify(toolGroups), chatId, id],
+      [slug, name, description, instructions, avatar.kind, avatar.value, model, env, JSON.stringify(toolGroups), skipBasePrompt ? 1 : 0, chatId, id],
     );
     return this.get(id);
   }
@@ -240,6 +250,7 @@ export class AgentStore {
       model: (row.model as string | null) ?? null,
       env: (row.env as string | null) ?? null,
       tool_groups: JSON.parse((row.tool_groups as string) || "[]") as string[],
+      skip_base_prompt: Boolean(row.skip_base_prompt),
       chat_id: (row.chat_id as string | null) ?? null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,

@@ -574,24 +574,82 @@
   margin-bottom: 8px;
 }
 
-.md-table-grid {
+/* One rounded frame around the table; long tables scroll inside it under a fixed heading row. */
+.md-table-scroll {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-md);
+  background: var(--main-bg);
+}
+
+.md-body .md-table-grid {
   width: 100%;
-  font-size: 12px;
-  border-collapse: collapse;
+  margin: 0;
+  font-size: 12.5px;
+  border-collapse: separate;
+  border-spacing: 0;
   color: var(--main-fg);
 }
 
-.md-table-grid th, .md-table-grid td {
-  border: 1px solid var(--main-border);
-  padding: 7px 12px;
+/* Rows are separated by hairlines only; the frame supplies the outer edge. */
+.md-body .md-table-grid th,
+.md-body .md-table-grid td {
+  border: 0;
+  border-bottom: 1px solid var(--main-border);
+  padding: 8px 14px;
   text-align: left;
+  vertical-align: top;
 }
 
-.md-table-grid th {
+.md-body .md-table-grid tbody tr:last-child td { border-bottom: 0; }
+.md-body .md-table-grid tbody tr:hover td { background: var(--main-surface); }
+
+.md-body .md-table-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0;
   background: var(--main-surface);
   color: var(--main-fg-muted);
+  font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
 }
+
+/* A heading with no sort button (single-row table) keeps the cell padding itself. */
+.md-body .md-table-grid th:not(:has(.md-table-sort)) { padding: 8px 14px; }
+
+/* Numbers are left-aligned like text (matching the full-screen grid), with equal-width digits. */
+.md-body .md-table-grid .is-num { font-variant-numeric: tabular-nums; }
+
+.md-table-sort {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.md-table-sort svg {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.md-table-sort:hover,
+.md-table-sort.active { color: var(--main-fg); }
+.md-table-sort:hover svg { opacity: 0.5; }
+.md-table-sort.active svg { opacity: 1; color: var(--main-accent); }
+.md-table-sort:focus-visible {
+  outline: 2px solid var(--main-accent);
+  outline-offset: -2px;
+}
+.md-table-sort:focus-visible svg { opacity: 0.5; }
 
 .user-bubble {
   background: var(--main-surface);
@@ -816,16 +874,20 @@
   margin: 0.8em 0;
 }
 
+/* Plain tables (document previews): hairlines between rows, no cell boxes. */
 .md-body th, .md-body td {
-  border: 1px solid var(--main-border);
-  padding: 7px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--main-border);
+  padding: 8px 14px;
   text-align: left;
+  vertical-align: top;
   color: var(--main-fg);
 }
 
 .md-body th {
   background: var(--main-surface);
   color: var(--main-fg-muted);
+  font-size: 11.5px;
   font-weight: 600;
 }
 
@@ -1194,6 +1256,54 @@ svg.link-chip-icon {
 .stop-btn:focus-visible {
   outline: 2px solid var(--main-accent);
   outline-offset: 1px;
+}
+
+/* Dictation: quiet until it is listening, then a pulsing ring so it's obvious the mic is live. */
+.mic-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.mic-btn:hover { background: var(--main-surface-alt); color: var(--main-fg); }
+.mic-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.mic-btn--on {
+  background: color-mix(in srgb, var(--main-accent) 12%, var(--main-bg));
+  color: var(--main-accent);
+  animation: mic-pulse 1.4s ease-out infinite;
+}
+.mic-btn--on:hover { background: color-mix(in srgb, var(--main-accent) 18%, var(--main-bg)); color: var(--main-accent); }
+@keyframes mic-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--main-accent) 35%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
+.mic-btn--busy { cursor: progress; }
+.mic-btn-spinner { animation: mic-spin 0.9s linear infinite; }
+@keyframes mic-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mic-btn--on,
+  .mic-btn-spinner { animation: none; }
+}
+.dictation-wave {
+  flex-shrink: 0;
+  color: var(--main-accent);
+}
+.dictation-error {
+  max-width: 260px;
+  color: var(--main-fg-muted);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
 }
 
 /* ── Activity timeline (reasoning + tool calls) ──────────────────────────── */
@@ -2204,3 +2314,117 @@ button.timeline-step-head:hover,
   justify-content: flex-end;
   gap: 6px;
 }
+
+/* Fenced code blocks in replies: language label and copy button above the code. */
+.code-block {
+  margin: 0.8em 0;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-md);
+  background: var(--main-surface-alt);
+  overflow: hidden;
+}
+.code-block-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--main-border);
+  color: var(--main-fg-faint);
+  font-size: 11px;
+}
+.code-block-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+}
+.code-block-copy:hover { background: var(--main-surface); color: var(--main-fg); }
+.code-block-copy:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.md-body .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Charts the agent writes as a ```chart block. */
+.chart-block {
+  margin: 0.9em 0;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-md);
+  background: var(--main-bg);
+}
+.chart-block--pending,
+.chart-block-note {
+  color: var(--main-fg-muted);
+  font-size: 12px;
+}
+.chart-block-note { padding: 6px 0 2px; }
+.chart-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.chart-block-title {
+  min-width: 0;
+  color: var(--main-fg);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.chart-block-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.chart-block-toggle button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+}
+.chart-block-toggle button + button { border-left: 1px solid var(--main-border); }
+.chart-block-toggle button.is-active { background: var(--main-surface-alt); color: var(--main-fg); }
+.chart-block-toggle button:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -2px; }
+/* Charts and diagrams are SVG, which doesn't pick up the page font everywhere, so it is set by name. */
+.chart-block,
+.chart-block svg text,
+.result-chart,
+.result-chart svg text,
+.diagram-block-svg svg {
+  font-family: var(--font-ui);
+}
+.chart-block-plot { width: 100%; }
+/* Diagrams (```mermaid): centred, never wider than the reply, scroll if very tall. */
+.diagram-block-svg {
+  display: flex;
+  justify-content: center;
+  max-height: 640px;
+  overflow: auto;
+}
+.diagram-block-svg svg { max-width: 100%; height: auto; }
+.md-body .diagram-block pre {
+  margin: 0;
+  max-height: 320px;
+}
+.chart-block-table { max-height: 320px; overflow: auto; }
+.md-body .chart-block-table table { margin: 0; width: 100%; }
+.chart-block-table td:not(:first-child),
+.chart-block-table th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }

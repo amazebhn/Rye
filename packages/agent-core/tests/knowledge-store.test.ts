@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KnowledgeStore, chunkMarkdown } from "../src/knowledge/store.js";
+import { KnowledgeStore, chunkKey, chunkMarkdown, meaningfulTokens } from "../src/knowledge/store.js";
+import { attachTurnContext, buildTurnContext, previousUserText, shownChunkKeys, stripTurnContext } from "../src/agent/turn-context.js";
+import type { Message } from "@earendil-works/pi-ai";
 import { MemoryStore } from "../src/memory/store.js";
 import type { EmbeddingResult } from "../src/embeddings/index.js";
 
@@ -72,6 +74,118 @@ describe("chunkMarkdown", () => {
   });
 });
 
+describe("searchForContext (notes shown without the agent asking)", () => {
+  const seed = async (store: KnowledgeStore) => ({
+    pay: await store.create({ title: "Payments Architecture", content: "# Overview\nProcesses billing and Stripe webhooks." }),
+    db: await store.create({ title: "MySQL Topology", content: "# Replicas\nRead traffic routes to the mysql-ro-01 replica." }),
+  });
+
+  test("small talk and stopwords retrieve nothing", () => {
+    expect(meaningfulTokens("yes please do that, thanks")).toEqual([]);
+    expect(meaningfulTokens("Why is the MySQL replica lagging?")).toEqual(["mysql", "replica", "lagging"]);
+  });
+
+  test(
+    "returns clear matches only, and skips chunks already shown",
+    withTempDir(async (dir) => {
+      const store = new KnowledgeStore(join(dir, "knowledge.db"), mockEmbedders);
+      try {
+        const { db } = await seed(store);
+        expect(await store.searchForContext("ok thanks")).toEqual([]);
+        // Unrelated to anything stored: the plain search may still return rows, this must not.
+        // (The toy embedder scores unrelated text at exactly 0.5, hence the bar just above it.)
+        expect((await store.search("what is the weather in lisbon")).length).toBeGreaterThan(0);
+        expect(await store.searchForContext("what is the weather in lisbon", { minSimilarity: 0.6 })).toEqual([]);
+
+        const hits = await store.searchForContext("why is the mysql replica lagging");
+        expect(hits.map((h) => h.doc_id)).toEqual([db.id]);
+        expect(hits[0].similarity).toBeGreaterThan(0.9);
+
+        expect(await store.searchForContext("why is the mysql replica lagging", { exclude: [chunkKey(hits[0])] })).toEqual([]);
+      } finally {
+        store.close();
+      }
+    }),
+  );
+
+  test(
+    "with enough chunks, a match must stand out from the background rather than clear a fixed bar",
+    withTempDir(async (dir) => {
+      const store = new KnowledgeStore(join(dir, "knowledge.db"), mockEmbedders);
+      try {
+        const { db } = await seed(store);
+        for (const topic of ["redis cache", "kafka queue", "stripe billing", "session cache"]) {
+          await store.create({ title: `Note on ${topic}`, content: `Details about the ${topic}.` });
+        }
+        // Scores 0.5 against every chunk: at the default bar, but no better than the background.
+        expect(await store.searchForContext("what is the weather in lisbon")).toEqual([]);
+        const hits = await store.searchForContext("database failover steps");
+        expect(hits.map((h) => h.doc_id)).toEqual([db.id]);
+        expect(hits[0].keyword_terms).toBe(0);
+        expect(hits[0].background_similarity).toBe(0);
+      } finally {
+        store.close();
+      }
+    }),
+  );
+
+  test(
+    "without embeddings, one shared word in a long question is not enough",
+    withTempDir(async (dir) => {
+      const store = new KnowledgeStore(join(dir, "knowledge.db"), nullEmbedders);
+      try {
+        const { db } = await seed(store);
+        expect(await store.searchForContext("how should traffic lights be timed downtown")).toEqual([]);
+        expect((await store.searchForContext("which replica takes read traffic")).map((h) => h.doc_id)).toEqual([db.id]);
+        // A single specific word is a fair query on its own.
+        expect((await store.searchForContext("stripe?")).length).toBe(1);
+      } finally {
+        store.close();
+      }
+    }),
+  );
+});
+
+describe("turn context", () => {
+  const now = new Date("2026-11-23T19:03:27Z");
+
+  test("rides after the user's text and strips back off", () => {
+    const block = buildTurnContext({ now, timeZone: "UTC", notes: ["note"], knowledge: "## Notes\n### T _(kn_ab12cd34#7, general)_\nbody" });
+    expect(block).toMatch(/Current date\/time: Mon, Nov 23, 2026.* 19:03 \(UTC\); UTC 2026-11-23T19:03Z/);
+    const sent = attachTurnContext("is prod ok?", block);
+    expect(sent.startsWith("is prod ok?\n\n<rye_context>")).toBe(true);
+    expect(stripTurnContext(sent)).toBe("is prod ok?");
+  });
+
+  test("history tells which chunks were shown and what the user last typed", () => {
+    const block = buildTurnContext({ now, timeZone: "UTC", knowledge: "### T _(kn_ab12cd34#7, general)_\nbody" });
+    const history = [
+      { role: "user", content: attachTurnContext("check the orders table", block), timestamp: 0 },
+      { role: "user", content: "[System] You have completed iteration 1", timestamp: 0 },
+    ] as Message[];
+    expect([...shownChunkKeys(history)]).toEqual(["kn_ab12cd34#7"]);
+    expect(previousUserText(history)).toBe("check the orders table");
+  });
+});
+
+describe("MemoryStore prompt budget", () => {
+  test(
+    "keeps the newest entries within budget and names the rest",
+    withTempDir((dir) => {
+      const store = new MemoryStore(join(dir, "memory.db"));
+      for (let i = 0; i < 10; i++) store.save(`fact_${i}`, "x".repeat(400));
+      const all = store.formatForPrompt(null, 100_000);
+      expect(all).not.toContain("not shown");
+      const tight = store.formatForPrompt(null, 350);
+      expect(tight.match(/\*\*fact_\d\*\*/g)?.length).toBe(3);
+      expect(tight).toContain("7 older saved entries are not shown");
+      expect(tight).toContain("list_memories_tool");
+      // One oversized entry is still shown rather than nothing.
+      expect(store.formatForPrompt(null, 1)).toContain("**fact_");
+    }),
+  );
+});
+
 describe("KnowledgeStore", () => {
   test(
     "hybrid search ranks semantic + keyword matches and falls back cleanly without embeddings",
@@ -108,8 +222,8 @@ describe("KnowledgeStore", () => {
 
         // Format for prompt
         const promptBlock = store.formatHitsForPrompt(redisHits);
-        expect(promptBlock).toContain("Relevant System Knowledge (RAG)");
-        expect(promptBlock).toContain(db.id);
+        expect(promptBlock).toContain("Knowledge base notes that may be relevant");
+        expect(promptBlock).toContain(chunkKey(redisHits[0]));
 
         // Delete doc
         expect(store.delete(pay.id)).toBe(true);

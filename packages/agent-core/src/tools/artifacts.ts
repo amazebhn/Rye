@@ -5,7 +5,7 @@
  */
 
 import type { Tool } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   ARTIFACT_FORMATS,
   ArtifactError,

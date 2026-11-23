@@ -101,6 +101,7 @@ export interface AgentRecord {
   model: string | null;
   env: string | null;
   tool_groups: string[];
+  skip_base_prompt: boolean;
   chat_id: string | null;
   created_at: string;
   updated_at: string;

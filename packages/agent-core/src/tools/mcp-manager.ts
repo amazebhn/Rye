@@ -5,7 +5,8 @@
  * next message, so neither the model nor a subagent can silently install one.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { McpServerDefinition, McpServerWrite } from "../mcp/config.js";
 import { MCP_CONFIG_FILE, previewMcpServerWrite, writeMcpServer } from "../mcp/config.js";
 import { getServerStatuses, reloadMcp } from "../mcp/client.js";

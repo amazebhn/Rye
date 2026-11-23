@@ -6,7 +6,8 @@
  * is reached, so the executor below is never called during normal usage.
  */
 
-import { Type, type Tool } from "@earendil-works/pi-ai";
+import { type Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { PromptType } from "@rye/shared";
 
 export const ASK_USER_TOOL_NAME = "ask_user_tool";

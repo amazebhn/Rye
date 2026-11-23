@@ -4,7 +4,7 @@
  */
 
 import type { Message, Tool } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { getTools } from "./index.js";
 import { getCustomToolDefs } from "./custom.js";
 import { parseToolName } from "../mcp/client.js";
@@ -150,6 +150,15 @@ function loadToolsToolDef(groups: ToolGroup[]): Tool {
 export function toolsForGroups(groups: ToolGroup[], enabled: Iterable<string>): Tool[] {
   const on = new Set(enabled);
   return groups.filter((g) => g.id === CORE_GROUP || on.has(g.id)).flatMap((g) => g.tools);
+}
+
+/** Exactly the listed groups' tools, for low-context agents: `core` only if listed, and no load_tools_tool. */
+export function toolsForExactGroups(groups: ToolGroup[], enabled: Iterable<string>): Tool[] {
+  const on = new Set(enabled);
+  return groups
+    .filter((g) => on.has(g.id))
+    .flatMap((g) => g.tools)
+    .filter((t) => t.name !== LOAD_TOOLS_TOOL_NAME);
 }
 
 export function groupOfTool(groups: ToolGroup[], toolName: string): string | undefined {

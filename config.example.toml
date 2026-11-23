@@ -19,6 +19,61 @@ port = 7337
 llm_provider = "ollama"
 
 # ---------------------------------------------------------------------------
+# Harness: what runs the model.
+#   "pi"     → Rye's own loop over the llm_provider APIs above (default)
+#   "claude" → the Claude Agent SDK, using Claude Code's sign-in on this machine
+#              (run `claude` and /login once) or ANTHROPIC_API_KEY
+# A harness takes precedence over llm_provider for the models it serves: with
+# harness = "claude", every Claude model (and every blank model tier) runs
+# through the Agent SDK even when Copilot also lists it. Other models you pick,
+# and embeddings, still use llm_provider.
+# RYE_HARNESS
+# ---------------------------------------------------------------------------
+harness = "pi"
+
+# ---------------------------------------------------------------------------
+# Claude harness (used when harness = "claude")
+# RYE_CLAUDE_MODEL, RYE_CLAUDE_CONTEXT_WINDOW
+# ---------------------------------------------------------------------------
+[claude]
+model = "sonnet"            # Claude Code alias ("sonnet", "opus", "haiku") or a full model id
+context_window = 200000
+# Claude Code's own WebSearch and WebFetch tools. Claude runs these itself: they
+# show as tool steps in the chat but don't go through Rye's approval prompts.
+# Only available under this harness.
+# RYE_CLAUDE_WEB_TOOLS
+web_tools = true
+
+# ---------------------------------------------------------------------------
+# What Rye adds to the prompt from its own stores
+# RYE_CONTEXT_MEMORY_BUDGET_TOKENS, RYE_CONTEXT_AUTO_KNOWLEDGE, RYE_CONTEXT_KNOWLEDGE_MIN_SIMILARITY
+# ---------------------------------------------------------------------------
+[context]
+# Estimated tokens of saved memories shown every turn, newest first. Older
+# entries past the budget are listed by key and read with list_memories_tool.
+memory_budget_tokens = 3000
+# Attach knowledge-base notes that clearly match the user's message. When off,
+# the agent only sees notes it looks up itself with search_knowledge_tool.
+auto_knowledge = true
+# Only used while the knowledge base has fewer than 5 chunks: embedding
+# similarity (0-1) a note needs to be attached. With more chunks, a note must
+# instead stand out from how the rest of the knowledge base scores.
+knowledge_min_similarity = 0.5
+
+# ---------------------------------------------------------------------------
+# Dictation (the mic button in the chat box)
+# RYE_SPEECH_STT_COMMAND
+# ---------------------------------------------------------------------------
+[speech]
+# Command that turns a recording into text, run on this machine. {input} is the
+# audio file (mp4 or webm) and {output_dir} a scratch folder; the transcript is
+# a .txt the command writes there, or else whatever it prints. Left blank, Rye
+# uses mlx_whisper if it is installed (on PATH or in a pyenv environment);
+# without either, the mic falls back to the browser's own speech recognition.
+# stt_command = "whisper-cli -m /path/to/ggml-base.en.bin -nt -f {input}"
+stt_command = ""
+
+# ---------------------------------------------------------------------------
 # Ollama (local LLM — default provider)
 # RYE_OLLAMA_BASE_URL, RYE_OLLAMA_MODEL, RYE_OLLAMA_EMBEDDING_MODEL, RYE_OLLAMA_CONTEXT_WINDOW
 # ---------------------------------------------------------------------------
@@ -48,6 +103,9 @@ model = ""
 #   medium → [copilot].model if set, else the newest Sonnet
 #   high   → newest Claude Opus (falls back to medium)
 # When Ollama is the first llm_provider, a blank tier uses [ollama].model.
+# With harness = "claude", blank tiers are haiku / [claude].model / opus instead.
+# Each call starts Claude Code, so set low to a Copilot or Ollama model if the
+# small background tasks (labels, compaction) feel slow.
 # A tier can name a model from any listed provider (e.g. low = "llama3.2").
 # RYE_MODEL_LOW, RYE_MODEL_MEDIUM, RYE_MODEL_HIGH
 # Values changed in the app's Settings page are stored in

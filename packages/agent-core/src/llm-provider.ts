@@ -1,12 +1,16 @@
 /**
  * LLM provider routing — with several providers enabled (e.g. Copilot and
- * Ollama), each model id is routed to the provider that serves it.
+ * Ollama), each model id is routed to the provider that serves it. The
+ * `harness` setting takes precedence: with harness = "claude", Claude models
+ * run through the Claude Agent SDK whichever providers are listed.
  */
 
 import { createModels, createProvider, type ProviderAuth } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import type { LlmProvider, Settings } from "./config.js";
+import { join } from "node:path";
+import { DATA_DIR, getSettings, type LlmProvider, type Settings } from "./config.js";
 import { getCopilotBearerToken } from "./copilot-auth.js";
+import { CLAUDE_SDK_API, CLAUDE_WEB_TOOLS, claudeAgentSdkApi } from "./harness/claude-sdk.js";
 
 const OLLAMA_CACHE_MS = 60_000;
 let ollamaCache: { baseUrl: string; models: string[]; at: number } | null = null;
@@ -38,8 +42,19 @@ async function isOllamaModel(settings: Settings, id: string): Promise<boolean> {
   }
 }
 
-/** The enabled provider that serves a model id. */
-export async function providerForModel(settings: Settings, id: string): Promise<LlmProvider> {
+/** A Claude Code model alias ("sonnet", "opus[1m]", "default") or a Claude model id. */
+export function isClaudeModelId(id: string): boolean {
+  return /^(claude|sonnet|opus|haiku|fable|mythos|default\b)/i.test(id.trim());
+}
+
+/** Whether the Claude harness serves this model, ahead of any llm_provider that also lists it. */
+export function usesClaudeHarness(settings: Settings, id: string): boolean {
+  return settings.harness === "claude" && (isClaudeModelId(id) || id === settings.claude.model);
+}
+
+/** The harness or enabled provider that serves a model id. */
+export async function providerForModel(settings: Settings, id: string): Promise<LlmProvider | "claude"> {
+  if (usesClaudeHarness(settings, id)) return "claude";
   const providers = settings.llm_provider;
   if (providers.length === 1) return providers[0];
   if (providers.includes("ollama") && (await isOllamaModel(settings, id))) return "ollama";
@@ -49,8 +64,8 @@ export async function providerForModel(settings: Settings, id: string): Promise<
 export interface ResolvedModel {
   id: string;
   name: string;
-  api: "openai-completions";
-  provider: "github-copilot" | "ollama";
+  api: "openai-completions" | typeof CLAUDE_SDK_API;
+  provider: "github-copilot" | "ollama" | "claude";
   baseUrl: string;
   headers?: Record<string, string>;
   reasoning: boolean;
@@ -68,7 +83,7 @@ export interface ResolvedModel {
 }
 
 const SHARED = {
-  api: "openai-completions",
+  api: "openai-completions" as const,
   reasoning: false,
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -88,9 +103,10 @@ const perRequestKeyAuth = (name: string): ProviderAuth => ({
 });
 
 /**
- * The Models collection every LLM call goes through. Both providers speak the
- * OpenAI completions API at the baseUrl on each ResolvedModel, so the models
- * list stays empty and resolveModel builds definitions on demand.
+ * The Models collection every LLM call goes through. Copilot and Ollama speak
+ * the OpenAI completions API at the baseUrl on each ResolvedModel, and the
+ * Claude harness runs the Agent SDK, so the models list stays empty and
+ * resolveModel builds definitions on demand.
  */
 export const models = createModels();
 for (const [id, name] of [["github-copilot", "GitHub Copilot"], ["ollama", "Ollama"]] as const) {
@@ -98,10 +114,38 @@ for (const [id, name] of [["github-copilot", "GitHub Copilot"], ["ollama", "Olla
     createProvider({ id, name, auth: perRequestKeyAuth(name), models: [], api: openAICompletionsApi() }),
   );
 }
+models.setProvider(
+  createProvider({
+    id: "claude",
+    name: "Claude",
+    // Claude Code authenticates itself (its own login, or ANTHROPIC_API_KEY).
+    auth: perRequestKeyAuth("Claude"),
+    models: [],
+    api: claudeAgentSdkApi({
+      cwd: () => join(DATA_DIR, "claude-harness"),
+      builtinTools: () => (getSettings().claude.web_tools ? CLAUDE_WEB_TOOLS : []),
+    }),
+  }),
+);
 
-/** pi-ai model definition for a model id, on whichever provider serves it. */
+/** pi-ai model definition for a model id, on whichever harness or provider serves it. */
 export async function resolveModel(settings: Settings, id: string): Promise<ResolvedModel> {
-  if ((await providerForModel(settings, id)) === "copilot") {
+  const provider = await providerForModel(settings, id);
+  if (provider === "claude") {
+    return {
+      ...SHARED,
+      id,
+      name: `Claude / ${id}`,
+      api: CLAUDE_SDK_API,
+      provider: "claude",
+      baseUrl: "",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: settings.claude.context_window,
+      maxTokens: 32000,
+    };
+  }
+  if (provider === "copilot") {
     return {
       ...SHARED,
       id,
@@ -130,9 +174,9 @@ export async function resolveModel(settings: Settings, id: string): Promise<Reso
   };
 }
 
-/** API key for a resolved model: a Copilot bearer, or a placeholder for Ollama. */
+/** API key for a resolved model: a Copilot bearer, or a placeholder for Ollama and the Claude harness. */
 export async function apiKeyFor(model: Pick<ResolvedModel, "provider">, forceRefresh = false): Promise<string> {
-  if (model.provider !== "github-copilot") return "ollama";
+  if (model.provider !== "github-copilot") return model.provider;
   const key = await getCopilotBearerToken(forceRefresh);
   // pi-ai's getEnvApiKey fallback for github-copilot reads this.
   process.env.COPILOT_GITHUB_TOKEN = key;

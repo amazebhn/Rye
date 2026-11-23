@@ -1,5 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy } from "lucide-react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { ArrowDown, ArrowUp, BarChart3, Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy, Rows3, Search } from "lucide-react";
+import { TableToolbarSlot } from "../shared/TableFrame";
+import ResultChart from "./ResultChart";
+import { numericColumns } from "../../utils/chartSpec";
 
 type SortDirection = "asc" | "desc";
 type TimeZoneMode = "local" | "UTC";
@@ -163,6 +167,9 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [timeZone, setTimeZone] = useState<TimeZoneMode>("local");
   const [striped, setStriped] = useState(true);
+  const [charting, setCharting] = useState(false);
+  const [query, setQuery] = useState("");
+  const toolbarSlot = useContext(TableToolbarSlot);
   const [visible, setVisible] = useState(pageSize);
   const [selected, setSelected] = useState<SelectedCell | null>(null);
   const [copied, setCopied] = useState(false);
@@ -174,8 +181,24 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
   );
   const dateColumns = useMemo(() => inferDateColumns(columns, rows), [columns, rows]);
 
+  const numericSet = useMemo(() => new Set(numericColumns(columns, rows)), [columns, rows]);
+
   const sortedRows = useMemo<IndexedRow[]>(() => {
-    const indexed = rows.map((row, originalIndex) => ({ row, originalIndex }));
+    const needle = query.trim().toLowerCase();
+    const indexed = rows
+      .map((row, originalIndex) => ({ row, originalIndex }))
+      // Search matches what a cell shows as well as its raw value, so a formatted date can be found either way.
+      .filter(
+        ({ row }) =>
+          !needle ||
+          columns.some((column) => {
+            const value = row[column];
+            return (
+              cellText(value).toLowerCase().includes(needle) ||
+              displayValue(value, column, dateColumns, timeZone).toLowerCase().includes(needle)
+            );
+          }),
+      );
     if (!sort) return indexed;
     return indexed.sort((left, right) => {
       const leftValue = left.row[sort.column];
@@ -192,7 +215,7 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
       if (comparison === 0) return left.originalIndex - right.originalIndex;
       return sort.direction === "asc" ? comparison : -comparison;
     });
-  }, [dateColumns, rows, sort]);
+  }, [columns, dateColumns, query, rows, sort, timeZone]);
 
   const groups = useMemo(() => {
     if (groupBy === null) return [{ key: "", label: "", rows: sortedRows }];
@@ -333,12 +356,28 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
   const remainingRows = expandedRowCount - shownRows;
   const ariaRowCount = rows.length + 1 + (groupBy === null ? 0 : groups.length);
 
-  return (
-    <div className={`result-data-grid${striped ? " is-striped" : ""}`}>
-      <div className="result-data-toolbar" aria-label="Table display controls">
+  // Full screen, these controls live in the viewer's header bar; elsewhere they sit above the grid.
+  const toolbar = (
+      <div className={`result-data-toolbar${toolbarSlot ? " result-data-toolbar--header" : ""}`} role="group" aria-label="Table display controls">
         <span className="result-data-summary">
-          {rows.length.toLocaleString()} rows · {columns.length.toLocaleString()} columns
+          {query.trim()
+            ? `${sortedRows.length.toLocaleString()} of ${rows.length.toLocaleString()} rows`
+            : `${rows.length.toLocaleString()} rows`}{" "}
+          · {columns.length.toLocaleString()} columns
         </span>
+        <label className="result-data-search">
+          <Search size={12} aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setVisible(pageSize);
+            }}
+            placeholder="Search rows"
+            aria-label="Search rows"
+          />
+        </label>
         <label className="result-data-control">
           <span>Group</span>
           <select
@@ -360,18 +399,36 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
         )}
         <button
           type="button"
-          className="result-data-toggle"
+          className="result-data-toggle result-data-toggle--icon"
           aria-pressed={striped}
+          aria-label="Striped rows"
+          title="Striped rows"
           onClick={() => setStriped((value) => !value)}
         >
-          Stripes
+          <Rows3 size={14} aria-hidden="true" />
         </button>
         {sort && (
           <button type="button" className="result-data-sort-clear" onClick={clearSort}>
             Clear sort
           </button>
         )}
+        <button
+          type="button"
+          className="result-data-toggle result-data-chart-toggle"
+          aria-pressed={charting}
+          onClick={() => setCharting((value) => !value)}
+        >
+          <BarChart3 size={14} aria-hidden="true" />
+          Chart
+        </button>
       </div>
+  );
+
+  return (
+    <div className={`result-data-grid${striped ? " is-striped" : ""}`}>
+      {toolbarSlot ? createPortal(toolbar, toolbarSlot) : toolbar}
+
+      {charting && <ResultChart columns={columns} rows={sortedRows.map((entry) => entry.row)} />}
 
       <div className="result-data-grid-scroll">
         <table className="result-table-grid" role="grid" aria-rowcount={ariaRowCount} aria-colcount={columns.length + 1}>
@@ -387,7 +444,7 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
                   >
                     <button
                       type="button"
-                      className={`result-data-sort${activeSort ? " active" : ""}`}
+                      className={`result-data-sort${activeSort ? " active" : ""}${numericSet.has(column) ? " is-num" : ""}`}
                       onClick={() => toggleSort(column)}
                       title={`Sort by ${column}`}
                     >
@@ -428,7 +485,7 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
                       return (
                         <td
                           key={column}
-                          className={`result-data-cell result-data-cell--${kind}${isSelected ? " is-selected" : ""}`}
+                          className={`result-data-cell result-data-cell--${kind}${numericSet.has(column) ? " is-num" : ""}${isSelected ? " is-selected" : ""}`}
                           data-grid-row={gridRowIndex}
                           data-grid-column={columnIndex}
                           tabIndex={isSelected || isInitial ? 0 : -1}
