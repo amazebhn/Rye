@@ -90,15 +90,22 @@ function knownToolLabel(tc: ToolCall): string | undefined {
     case "s3_read_object_tool":
       return `Read \`s3://${a.bucket ?? ""}/${a.key ?? ""}\``;
 
+    // sql_* are the current names; mysql_* are what older chats recorded.
+    case "sql_query_tool":
     case "mysql_query_tool": {
       const sql = String(a.query ?? a.sql ?? "").replace(/\s+/g, " ").slice(0, 60);
-      const db = a.database ? ` (\`${a.database}\`)` : "";
-      return `Queried DB${db}: \`${sql}${sql.length === 60 ? "…" : ""}\``;
+      // Which connection, and which database on it, when the call named them.
+      const target = [a.connection, a.database].filter(Boolean).join(" / ");
+      return `Queried DB${target ? ` (\`${target}\`)` : ""}: \`${sql}${sql.length === 60 ? "…" : ""}\``;
     }
-    case "mysql_schema_tool":
-      return `Fetched schema${a.table ? ` for \`${a.table}\`` : ""}${a.database ? ` in \`${a.database}\`` : ""}`;
+    case "sql_schema_tool":
+    case "mysql_schema_tool": {
+      const target = [a.connection, a.database].filter(Boolean).join(" / ");
+      return `Fetched schema${a.table ? ` for \`${a.table}\`` : ""}${target ? ` in \`${target}\`` : ""}`;
+    }
+    case "sql_list_databases_tool":
     case "mysql_list_databases_tool":
-      return "Listed databases";
+      return `Listed databases${a.connection ? ` on \`${a.connection}\`` : ""}`;
 
     case "jira_ticket_tool":
       return `Fetched Jira ticket \`${a.ticket_id ?? ""}\``;

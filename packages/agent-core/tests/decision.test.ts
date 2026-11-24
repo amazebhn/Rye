@@ -282,12 +282,12 @@ describe("decision tool-group selector", () => {
   test("union: decision adds groups, keyword and previous picks stay", async () => {
     const decide = yesTo(["aws", "mcp:grafana"]);
     const picked = await selector("chat", decide)(input("run a mysql query", ["jira"]));
-    expect(new Set(picked)).toEqual(new Set(["mysql", "jira", "aws", "mcp:grafana"]));
+    expect(new Set(picked)).toEqual(new Set(["sql", "jira", "aws", "mcp:grafana"]));
     const [state, questions] = decide.mock.calls[0];
     // Only undecided groups are asked about, with Jev-safe ids.
-    expect(Object.keys(questions)).not.toContain("mysql");
+    expect(Object.keys(questions)).not.toContain("sql");
     expect(Object.keys(questions)).toContain("mcp_grafana");
-    expect(state).toMatchObject({ user_message: "run a mysql query", enabled_tool_groups: ["jira", "mysql"] });
+    expect(state).toMatchObject({ user_message: "run a mysql query", enabled_tool_groups: ["jira", "sql"] });
   });
 
   test("below-threshold answers add nothing", async () => {

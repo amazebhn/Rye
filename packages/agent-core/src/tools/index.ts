@@ -8,7 +8,16 @@ import { Type } from "typebox";
 
 import { codeSearchTools, listRepos, codeSearch, symbolSearch, stackTraceTool, logToSource, fileSearch } from "./code-search.js";
 import { awsTools, cloudwatchSearch, cloudwatchListLogGroups, rdsListInstances, ecsListClusters, ecsListServices, ecsDescribeService, ecsListTasks, ec2ListInstances, albListLoadBalancers, albTargetHealth, s3ListBuckets, s3ListObjects, s3ReadObject } from "./aws.js";
-import { mysqlTools, mysqlQuery, mysqlSchema, mysqlListDatabases } from "./mysql.js";
+import {
+  SQL_LIST_DATABASES_TOOL,
+  SQL_QUERY_TOOL,
+  SQL_SCHEMA_TOOL,
+  legacyMysqlConnection,
+  sqlListDatabases,
+  sqlQuery,
+  sqlSchema,
+  sqlTools,
+} from "./sql.js";
 import { jiraTools, jiraTicket } from "./jira.js";
 import { gitTools, gitLog, gitBlame } from "./git.js";
 import { memoryTools, rememberFact, forgetFact, listMemories } from "./memory.js";
@@ -42,6 +51,13 @@ import { skillTools, loadSkill, saveSkill, readSkillFile } from "./skills.js";
 import { artifactTools, writeArtifact, readArtifact, WRITE_ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME } from "./artifacts.js";
 import { RUN_SKILL_SCRIPT_TOOL_NAME, runSkillScriptTool } from "../skill/runner.js";
 import type { ScriptApprovalToken } from "../skill/script-approval.js";
+import { chatTools, readChatForAgent, searchChatsForAgent } from "./chats.js";
+import type { ChatStore } from "../chat/store.js";
+
+let _chatStore: ChatStore | undefined;
+export function setChatStore(store: ChatStore) {
+  _chatStore = store;
+}
 
 let _memoryStore: MemoryStore | undefined;
 let _knowledgeStore: KnowledgeStore | undefined;
@@ -84,8 +100,9 @@ const toolCache = new Map<string, CacheEntry>();
 
 // Tools that are safe to cache and their TTL in ms
 const CACHE_TTL: Record<string, number> = {
-  mysql_schema_tool: 24 * 60 * 60 * 1000,  // 24 hr — schema is stable between deploys
-  mysql_list_databases_tool: 60 * 60 * 1000,  // 1 hr — database list rarely changes
+  sql_schema_tool: 24 * 60 * 60 * 1000,  // 24 hr — schema is stable between deploys
+  mysql_schema_tool: 24 * 60 * 60 * 1000,
+  sql_list_databases_tool: 10 * 60 * 1000,  // 10 min — also lists the configured connections, which change with config
   list_repos_tool:    7 * 24 * 60 * 60 * 1000,  // 7 days — static config
 };
 
@@ -120,7 +137,7 @@ function cacheSet(name: string, args: Record<string, unknown>, result: string, t
 const STATIC_TOOLS: Tool[] = [
   ...codeSearchTools,
   ...awsTools,
-  ...mysqlTools,
+  ...sqlTools,
   ...jiraTools,
   ...gitTools,
   ...memoryTools,
@@ -132,6 +149,7 @@ const STATIC_TOOLS: Tool[] = [
   ...mcpManagerTools,
   ...skillTools,
   ...artifactTools,
+  ...chatTools,
   {
     name: "save_sop_tool",
     description:
@@ -379,15 +397,26 @@ export async function executeTool(
       result = await s3ReadObject(args as Parameters<typeof s3ReadObject>[0]);
       break;
 
-    // MySQL
+    // SQL databases (MySQL and PostgreSQL)
+    case SQL_QUERY_TOOL:
+      result = await sqlQuery(args as Parameters<typeof sqlQuery>[0], context.sessionId);
+      break;
+    case SQL_SCHEMA_TOOL:
+      result = await sqlSchema(args as Parameters<typeof sqlSchema>[0]);
+      break;
+    case SQL_LIST_DATABASES_TOOL:
+      result = await sqlListDatabases(args as Parameters<typeof sqlListDatabases>[0]);
+      break;
+    // The old MySQL-only names, no longer offered to the model but still answered
+    // for saved SOPs and skills that name them. They mean the MySQL connection.
     case "mysql_query_tool":
-      result = await mysqlQuery(args as Parameters<typeof mysqlQuery>[0], context.sessionId);
+      result = await sqlQuery({ ...(args as Parameters<typeof sqlQuery>[0]), connection: legacyMysqlConnection() }, context.sessionId, undefined, name);
       break;
     case "mysql_schema_tool":
-      result = await mysqlSchema(args as Parameters<typeof mysqlSchema>[0]);
+      result = await sqlSchema({ ...(args as Parameters<typeof sqlSchema>[0]), connection: legacyMysqlConnection() });
       break;
     case "mysql_list_databases_tool":
-      result = await mysqlListDatabases();
+      result = await sqlListDatabases({ connection: legacyMysqlConnection() });
       break;
 
     // Jira
@@ -415,6 +444,16 @@ export async function executeTool(
     case "list_memories_tool":
       if (!_memoryStore) return "Memory store not initialised.";
       result = listMemories(_memoryStore);
+      break;
+
+    // Earlier conversations
+    case "search_chats_tool":
+      if (!_chatStore) return "Conversation history is not available.";
+      result = await searchChatsForAgent(_chatStore, args as { query: string; limit?: number }, context.sessionId);
+      break;
+    case "read_chat_tool":
+      if (!_chatStore) return "Conversation history is not available.";
+      result = readChatForAgent(_chatStore, args as { chat_id: string; message?: number });
       break;
 
     // Knowledge Base (RAG)
@@ -642,6 +681,7 @@ export async function executeTool(
     result = storeOrInlineText(name, JSON.stringify(args), result, context.sessionId);
   }
 
-  if (ttl !== undefined) cacheSet(name, args, result, ttl);
+  // A failure is never cached: a wrong password fixed in config must not keep "failing" for a day.
+  if (ttl !== undefined && !/^(Error:|[^\n]{0,120}\berror:)/i.test(result)) cacheSet(name, args, result, ttl);
   return result;
 }

@@ -546,11 +546,11 @@
 .mode-thumb-line--short { width: 70%; }
 .mode-thumb-pill { width: 26px; margin-top: 2px; background: var(--thumb-ink); opacity: 0.85; }
 .mode-thumb-spark { display: inline-flex; color: var(--thumb-ink); }
-:root[data-theme="dark"] .mode-thumb { --thumb-tint: #2a2d33; }
+:root[data-theme="dark"] .mode-thumb { --thumb-tint: var(--main-surface-alt); --thumb-ink: var(--main-fg-faint); }
 :root[data-theme="dark"] .mode-thumb--ai { --thumb-tint: #252c4a; --thumb-ink: #8ea2ff; }
 :root[data-theme="dark"] .mode-thumb--install { --thumb-tint: #1f3530; --thumb-ink: #5cc4b0; }
-:root[data-theme="dark"] .mode-thumb-heading { background: #3a3d44; }
-:root[data-theme="dark"] .mode-thumb-line { background: #2f3238; }
+:root[data-theme="dark"] .mode-thumb-heading { background: var(--main-border); }
+:root[data-theme="dark"] .mode-thumb-line { background: var(--main-border-subtle); }
 
 /* AI composer: prompt above, model + send below. */
 :is(.modal-panel, .sop-chat-sheet) .modal-composer {
@@ -616,7 +616,7 @@
   border: 1px solid var(--main-border);
   border-radius: var(--radius-lg);
   background: var(--main-bg);
-  box-shadow: 0 12px 28px -8px rgba(16, 24, 40, 0.22), 0 2px 6px rgba(16, 24, 40, 0.06);
+  box-shadow: var(--shadow-float);
 }
 .model-select-group + .model-select-group {
   margin-top: 4px;
@@ -686,7 +686,7 @@
   border: 1px solid var(--main-border);
   border-radius: var(--radius-lg);
   background: var(--main-bg);
-  box-shadow: 0 12px 28px -8px rgba(16, 24, 40, 0.22), 0 2px 6px rgba(16, 24, 40, 0.06);
+  box-shadow: var(--shadow-float);
 }
 .model-select-empty {
   padding: 10px;
@@ -739,6 +739,7 @@
   box-shadow: 0 18px 40px -10px rgba(16, 24, 40, 0.28), 0 4px 10px rgba(16, 24, 40, 0.08);
   animation: agent-card-in 120ms ease-out;
 }
+:root[data-theme="dark"] .agent-contact-card { box-shadow: var(--shadow-float); }
 @keyframes agent-card-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
@@ -966,7 +967,7 @@
   background: var(--main-bg);
   border: 1px solid var(--main-border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 28px -8px rgba(16, 24, 40, 0.22), 0 2px 6px rgba(16, 24, 40, 0.06);
+  box-shadow: var(--shadow-float);
   padding: 4px;
   z-index: 30;
 }

@@ -248,7 +248,12 @@ export function writeMcpServer(
     ...(write.config.disabled !== undefined ? { disabled: write.config.disabled } : {}),
   };
   document[key] = { ...servers, [write.name]: config };
+  saveDocument(document, filePath);
+  return preview;
+}
 
+/** Write the whole config through a temp file and a rename, so a crash never leaves it half-written. */
+function saveDocument(document: McpConfigDocument, filePath: string): void {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
   const tempPath = join(dir, `.${basename(filePath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
@@ -259,7 +264,49 @@ export function writeMcpServer(
     rmSync(tempPath, { force: true });
     throw err;
   }
-  return preview;
+}
+
+/** One entry of the config file as it is written there: nothing interpolated, disabled and invalid ones included. */
+export interface McpServerEntry {
+  name: string;
+  config: McpServerDefinition;
+  disabled: boolean;
+  /** Why this entry can't be used, when it can't. */
+  problems: string[];
+}
+
+/** Every server in the config file, in file order, for managing them (the client only loads usable ones). */
+export function listMcpServerEntries(filePath = MCP_CONFIG_FILE): McpServerEntry[] {
+  const { servers } = serverCollection(readDocument(filePath));
+  return Object.entries(servers).map(([name, raw]) => {
+    if (!isRecord(raw)) return { name, config: {}, disabled: false, problems: ["The definition must be a JSON object."] };
+    const config = raw as McpServerDefinition;
+    return { name, config, disabled: config.disabled === true, problems: validateMcpServerWrite({ name, config }) };
+  });
+}
+
+/** Remove one server, leaving the rest of the document as it was. Returns false if there was no such server. */
+export function removeMcpServer(name: string, filePath = MCP_CONFIG_FILE): boolean {
+  const document = readDocument(filePath);
+  const { key, servers } = serverCollection(document);
+  if (!Object.prototype.hasOwnProperty.call(servers, name)) return false;
+  const { [name]: _removed, ...rest } = servers;
+  document[key] = rest;
+  saveDocument(document, filePath);
+  return true;
+}
+
+/** Turn one server off or on without touching the rest of its definition. Returns false if there was no such server. */
+export function setMcpServerDisabled(name: string, disabled: boolean, filePath = MCP_CONFIG_FILE): boolean {
+  const document = readDocument(filePath);
+  const { key, servers } = serverCollection(document);
+  const current = servers[name];
+  if (!Object.prototype.hasOwnProperty.call(servers, name) || !isRecord(current)) return false;
+  const { disabled: _was, ...definition } = current as McpServerDefinition;
+  // "disabled: false" is just noise in the file, so an enabled server carries no flag.
+  document[key] = { ...servers, [name]: disabled ? { ...definition, disabled: true } : definition };
+  saveDocument(document, filePath);
+  return true;
 }
 
 export function loadMcpConfig(): McpServerConfig[] {

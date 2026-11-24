@@ -249,7 +249,8 @@ export class AgentStore {
       },
       model: (row.model as string | null) ?? null,
       env: (row.env as string | null) ?? null,
-      tool_groups: JSON.parse((row.tool_groups as string) || "[]") as string[],
+      // The SQL group was called "mysql" when MySQL was the only engine; agents saved then mean the same group.
+      tool_groups: [...new Set((JSON.parse((row.tool_groups as string) || "[]") as string[]).map((g) => (g === "mysql" ? "sql" : g)))],
       skip_base_prompt: Boolean(row.skip_base_prompt),
       chat_id: (row.chat_id as string | null) ?? null,
       created_at: row.created_at as string,

@@ -61,7 +61,8 @@ describe("buildToolGroups", () => {
 describe("resolveGroupNames", () => {
   test("accepts group ids, bare MCP server names and tool names", () => {
     const { enabled, unknown } = resolveGroupNames(groups, ["MySQL", "grafana", "git_log_tool", "nope"]);
-    expect(enabled.sort()).toEqual(["git", "mcp:grafana", "mysql"]);
+    // "MySQL" is the SQL group's former name and still resolves to it.
+    expect(enabled.sort()).toEqual(["git", "mcp:grafana", "sql"]);
     expect(unknown).toEqual(["nope"]);
   });
 });
@@ -72,12 +73,20 @@ describe("defaultToolGroupSelector", () => {
   });
 
   test("keyword matches", async () => {
-    expect(await select("run a sql query on the orders table")).toContain("mysql");
+    expect(await select("run a sql query on the orders table")).toContain("sql");
+    expect(await select("check the postgres replica")).toContain("sql");
     expect(await select("check cloudwatch for the payments ecs service")).toContain("aws");
     expect(await select("look at PAY-1234")).toContain("jira");
     expect(await select("which commit touched this branch")).toContain("git");
     expect(await select("check the grafana dashboard")).toContain("mcp:grafana");
     expect(await select("at com.acme.Foo.bar(Foo.java:42)")).toContain("code_search");
+  });
+
+  test("references to earlier conversations enable the chats group", async () => {
+    expect(await select("what did we decide last time about the orders table")).toContain("chats");
+    expect(await select("find that in a previous chat")).toContain("chats");
+    expect(await select("we already looked into the replica lag, what was the cause?")).toContain("chats");
+    expect(await select("why is checkout slow right now")).not.toContain("chats");
   });
 
   test("keeps previously enabled groups and drops unknown ones", async () => {

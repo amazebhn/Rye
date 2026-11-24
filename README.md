@@ -9,7 +9,7 @@ Rye is an evidence-driven production support AI agent and workspace for investig
   - **Facts & Glossary**: Compact, always-in-prompt table for ground-truth facts, acronyms, and custom domain terms.
   - **Knowledge Base (RAG)**: Markdown notes chunked and indexed with hybrid **SQLite FTS5 + vector embeddings** (Ollama or GitHub Copilot, combined via Reciprocal Rank Fusion). Both users and agents (`save_knowledge_tool`) can save durable system knowledge. Notes that clearly match a message are attached to it automatically, once per conversation; the agent searches for anything else itself. Tune with the `[context]` section of `config.toml`.
 - **SOPs & Skills**: Author, import, and refine runbooks and reusable skills manually or with the built-in AI Editor.
-- **Infrastructure & Code Connectors**: Built-in tools for AWS (CloudWatch, ECS, EC2, RDS, ALB, S3), MySQL, Jira, Git/Bitbucket, local code search (`ripgrep`), custom tools, and MCP servers with per-environment switching.
+- **Infrastructure & Code Connectors**: Built-in tools for AWS (CloudWatch, ECS, EC2, RDS, ALB, S3), SQL databases (any number of MySQL and PostgreSQL connections per environment, read-only), Jira, Git/Bitbucket, local code search (`ripgrep`), custom tools, and MCP servers with per-environment switching.
 - **Web UI & CLI**: Local React web app with usage analytics, stored result tables, downloadable artifacts, and a companion CLI.
 
 ---
@@ -109,7 +109,8 @@ curl http://127.0.0.1:7337/health
 | `~/.local/share/rye/agent-settings.json` | Auto-routing & agent-to-agent chattiness settings |
 | `~/.local/share/rye/sops.db` | Runbooks (SOPs) with semantic embeddings |
 | `~/.local/share/rye/skills/` | Rye-owned editable Skills (`SKILL.md`) |
-| `~/.local/share/rye/chats.json` | Persisted chat history & dedicated agent chats |
+| `~/.local/share/rye/chats.db` | Chat history & dedicated agent chats (searchable; nothing is dropped for age) |
+| `~/.local/share/rye/chats.json` | Chat history from before the move to SQLite. Imported once on start and left in place as a backup |
 | `~/.local/share/rye/model-settings.json` | UI overrides for model tiers, task routing, and decision model |
 
 ### Environment Variables
@@ -124,7 +125,7 @@ Any config setting can be overridden via environment variables (priority: shell 
 - `RYE_COPILOT_API_KEY`, `RYE_COPILOT_MODEL`
 - `RYE_DECISION_PROVIDER`, `RYE_DECISION_MODEL`
 
-See [`config.example.toml`](./config.example.toml) for the full reference of connectors (`[aws]`, `[mysql]`, `[jira]`, `[git]`, `[code_search]`, `[environments.*]`, and MCP).
+See [`config.example.toml`](./config.example.toml) for the full reference of connectors (`[aws]`, `[databases.*]`, `[mysql]`, `[jira]`, `[git]`, `[code_search]`, `[environments.*]`, and MCP).
 
 ---
 

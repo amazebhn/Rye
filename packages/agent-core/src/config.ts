@@ -178,6 +178,31 @@ const MySQLSchema = z.object({
   database: z.string().default(""),
 });
 
+export const DATABASE_TYPES = ["mysql", "postgres"] as const;
+export type DatabaseType = (typeof DATABASE_TYPES)[number];
+
+// One named SQL connection, e.g. [databases.orders]. An environment can change any field of a
+// connection ([environments.prod.databases.orders]) or add connections of its own.
+const DatabaseSchema = z.object({
+  type: z.enum(DATABASE_TYPES),
+  // A connection URL (postgres://user:pass@host:5432/db?sslmode=require or mysql://…) instead of the fields below.
+  url: z.string().optional(),
+  host: z.string().optional(),
+  port: z.number().int().optional(),
+  user: z.string().optional(),
+  password: z.string().optional(),
+  // Name of an environment variable holding the password, so it needn't sit in config.toml.
+  password_env: z.string().optional(),
+  // The database (Postgres) or schema (MySQL) used when a query doesn't name one.
+  database: z.string().optional(),
+  // Connect over TLS. Hosted Postgres usually requires it.
+  ssl: z.boolean().optional(),
+  // What this database holds, in a few words; shown to the agent so it picks the right one.
+  description: z.string().optional(),
+});
+export type DatabaseConfig = z.infer<typeof DatabaseSchema>;
+const DatabaseNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/, "use letters, digits, - and _");
+
 const JiraSchema = z.object({
   url: z.string().default(""),
   email: z.string().default(""),
@@ -223,6 +248,23 @@ const ModelsSchema = z.object({
 
 export const DECISION_PROVIDERS = ["off", "ollama", "clef", "chat"] as const;
 const DecisionProviderSchema = z.enum(DECISION_PROVIDERS);
+
+/**
+ * What re-reads retrieved knowledge notes against the question (see embeddings/rerank.ts):
+ *   off      — nothing; notes are ranked by keyword and embedding only
+ *   ollama   — a chat model in Ollama, asked yes/no per note (`model`)
+ *   decision — the decision model, asked about every note in one request
+ *   server   — a rerank server speaking the /v1/rerank protocol (`url`, optional `model`), e.g.
+ *              llama-server --rerank; the way to run cross-encoders and zerank, which Ollama can't score
+ */
+export const RERANK_PROVIDERS = ["off", "ollama", "decision", "server"] as const;
+export type RerankProvider = (typeof RERANK_PROVIDERS)[number];
+const RerankProviderSchema = z.enum(RERANK_PROVIDERS);
+const RerankSchema = z.object({
+  provider: RerankProviderSchema.default("off"),
+  model: z.string().default(""),
+  url: z.string().default(""),
+});
 export type DecisionProvider = z.infer<typeof DecisionProviderSchema>;
 
 const ClefSchema = z.object({
@@ -272,8 +314,12 @@ const SettingsSchema = z.object({
   speech: SpeechSchema.default({}),
   models: ModelsSchema.default({}),
   decision: DecisionSchema.default({}),
+  rerank: RerankSchema.default({}),
   aws: AWSSchema.default({}),
   mysql: MySQLSchema.default({}),
+  // Named SQL connections (MySQL or Postgres). The [mysql] section above still works and is
+  // treated as a connection called "mysql"; see db/connections.ts.
+  databases: z.record(DatabaseNameSchema, DatabaseSchema).default({}),
   jira: JiraSchema.default({}),
   git: GitSchema.default({}),
   code_search: CodeSearchSchema.default({}),
@@ -291,6 +337,7 @@ const SettingsSchema = z.object({
       name: z.string().optional(),
       aws:   AWSSchema.partial().optional(),
       mysql: MySQLSchema.partial().optional(),
+      databases: z.record(DatabaseNameSchema, DatabaseSchema.partial()).optional(),
       jira:  JiraSchema.partial().optional(),
       git:   GitSchema.partial().optional(),
     })
@@ -398,6 +445,9 @@ function applyEnvOverrides(raw: Record<string, unknown>): Record<string, unknown
   maybe(str("RYE_OLLAMA_BASE_URL"), ["ollama", "base_url"]);
   maybe(str("RYE_OLLAMA_MODEL"), ["ollama", "model"]);
   maybe(str("RYE_OLLAMA_EMBEDDING_MODEL"), ["ollama", "embedding_model"]);
+  maybe(str("RYE_RERANK_PROVIDER"), ["rerank", "provider"]);
+  maybe(str("RYE_RERANK_MODEL"), ["rerank", "model"]);
+  maybe(str("RYE_RERANK_URL"), ["rerank", "url"]);
   maybe(num("RYE_OLLAMA_CONTEXT_WINDOW"), ["ollama", "context_window"]);
 
   // Copilot
@@ -489,6 +539,16 @@ export const ModelOverridesSchema = z
       })
       .strict()
       .optional(),
+    // The Ollama model that turns notes and messages into vectors. Changing it means reindexing.
+    embedding_model: ModelIdSchema.nullable().optional(),
+    rerank: z
+      .object({
+        provider: RerankProviderSchema.nullable().optional(),
+        model: z.string().max(200).nullable().optional(),
+        url: z.string().max(500).nullable().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ModelOverrides = z.infer<typeof ModelOverridesSchema>;
@@ -519,6 +579,10 @@ function applyModelOverrides(s: Settings): void {
   }
   if (overrides.decision?.provider != null) s.decision.provider = overrides.decision.provider;
   if (overrides.decision?.model != null) s.decision.model = overrides.decision.model;
+  if (overrides.embedding_model) s.ollama.embedding_model = overrides.embedding_model;
+  if (overrides.rerank?.provider != null) s.rerank.provider = overrides.rerank.provider;
+  if (overrides.rerank?.model != null) s.rerank.model = overrides.rerank.model;
+  if (overrides.rerank?.url != null) s.rerank.url = overrides.rerank.url;
 }
 
 function loadSettings(): Settings {
@@ -585,6 +649,24 @@ export function setActiveEnv(name: string | null): void {
  * the base connector settings. This is what tools should use instead of the
  * static `settings` singleton, because it reflects runtime env switches.
  */
+/**
+ * An environment's database connections: the base ones with the environment's changes
+ * applied field by field, plus any it defines itself. One it defines without a `type`
+ * (and with no base connection to inherit it from) is left out.
+ */
+export function mergeDatabases(
+  base: Settings["databases"],
+  override: Record<string, Partial<DatabaseConfig>> | undefined,
+): Settings["databases"] {
+  if (!override) return base;
+  const merged: Settings["databases"] = { ...base };
+  for (const [name, changes] of Object.entries(override)) {
+    const combined = { ...base[name], ...changes };
+    if (combined.type) merged[name] = combined as DatabaseConfig;
+  }
+  return merged;
+}
+
 export function getEffectiveSettings(): Settings {
   const base = loadSettings();
   const envKey = getActiveEnv();
@@ -597,6 +679,7 @@ export function getEffectiveSettings(): Settings {
     ...base,
     aws:   override.aws   ? { ...base.aws,   ...override.aws   } : base.aws,
     mysql: override.mysql ? { ...base.mysql, ...override.mysql } : base.mysql,
+    databases: mergeDatabases(base.databases, override.databases),
     jira:  override.jira  ? { ...base.jira,  ...override.jira  } : base.jira,
     git:   override.git   ? { ...base.git,   ...override.git   } : base.git,
   };

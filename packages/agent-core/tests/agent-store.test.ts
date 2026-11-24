@@ -66,7 +66,8 @@ describe("AgentStore", () => {
         });
         expect(db.slug).toBe("database-specialist");
         expect(db.avatar).toEqual({ kind: "gradient", value: "ocean" });
-        expect(db.tool_groups).toEqual(["mysql", "results"]);
+        // Saved under the SQL group's old name, read back under its current one.
+        expect(db.tool_groups).toEqual(["sql", "results"]);
 
         // Duplicate name gets a unique slug suffix
         const db2 = store.create({
@@ -94,7 +95,7 @@ describe("AgentStore", () => {
   );
 
   test(
-    "ChatStore preserves agentId and exempts agent chats from the 50-chat unfiled cap",
+    "ChatStore preserves agentId and keeps every chat, however many there are",
     withTempDir((dir) => {
       const chatStore = new ChatStore(join(dir, "chats.json"));
       const agentChat = {
@@ -113,10 +114,11 @@ describe("AgentStore", () => {
         updatedAt: 1000 + i,
       }));
 
-      const saved = chatStore.replace([agentChat, ...regularChats]);
+      const saved = chatStore.upsertMany([agentChat, ...regularChats]);
       expect(saved.some((c) => c.id === "chat_agt_1234" && c.agentId === "agt_1234")).toBe(true);
-      // 50 regular + 1 agent chat = 51
-      expect(saved.length).toBe(51);
+      // Nothing is dropped: 55 regular + 1 agent chat.
+      expect(saved.length).toBe(56);
+      expect(chatStore.count()).toBe(56);
     }),
   );
 

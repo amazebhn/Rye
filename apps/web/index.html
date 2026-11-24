@@ -1,8 +1,28 @@
 <!doctype html>
-<html lang="en">
+<!-- data-theme-default: the theme when the user has not chosen one ("light", "dark" or "system"). -->
+<html lang="en" data-theme-default="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Set the theme before first paint so a dark theme never flashes light. Mirrors applyTheme in src/utils/theme.ts.
+      (function () {
+        var root = document.documentElement;
+        var theme = "light";
+        try {
+          var pref = localStorage.getItem("rye-theme");
+          if (pref !== "light" && pref !== "dark" && pref !== "system") pref = root.getAttribute("data-theme-default");
+          if (pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches)) theme = "dark";
+        } catch (e) {}
+        root.setAttribute("data-theme", theme);
+        root.style.colorScheme = theme;
+        // The accent colour, likewise (applyAccent). Blue is the default and has no attribute.
+        try {
+          var accent = localStorage.getItem("rye-accent");
+          if (/^(graphite|green|teal|purple|pink|orange)$/.test(accent)) root.setAttribute("data-accent", accent);
+        } catch (e) {}
+      })();
+    </script>
     <title>Rye</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/svg+xml" href="/rye.svg" />

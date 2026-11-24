@@ -7,7 +7,6 @@ import {
   Kanban,
   Brain,
   Bot,
-  Zap,
   BarChart3,
   MoreHorizontal,
   MoreVertical,
@@ -20,11 +19,13 @@ import {
   FolderMinus,
   Check,
   ChevronRight,
+  Search,
   Settings as SettingsIcon,
 } from "lucide-react";
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 import type { ChatFolder, ChatRecord } from "../../utils/types";
 import { useSops } from "../../contexts/SopContext";
-import { useSkills } from "../../contexts/SkillContext";
 import { useMemories } from "../../contexts/MemoryContext";
 import { useAgents } from "../../contexts/AgentContext";
 import AgentAvatar from "../agents/AgentAvatar";
@@ -103,14 +104,17 @@ interface Props {
   runningChatIds: ReadonlySet<string>;
   envKey: string | undefined;
   onEnvChange: (key: string) => void;
-  activePanel: "home" | "chat" | "sops" | "skills" | "memory" | "agents" | "analytics" | "settings";
+  activePanel: "home" | "chat" | "sops" | "memory" | "agents" | "analytics" | "settings";
   onNewChat: () => void;
   onClose: () => void;
   onSwitch: (chat: ChatRecord) => void;
+  /** Open the chat search dialog (also on Cmd/Ctrl+K). */
+  onOpenSearch: () => void;
+  /** The chat list hasn't arrived from the server yet. */
+  chatsLoading?: boolean;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onRename: (id: string, title: string) => void;
   onOpenSops: () => void;
-  onOpenSkills: () => void;
   onOpenMemory: () => void;
   onOpenAgents: () => void;
   onOpenAnalytics: () => void;
@@ -134,15 +138,15 @@ export default function Sidebar({
   onSwitch,
   onDelete,
   onRename,
+  onOpenSearch,
+  chatsLoading = false,
   onOpenSops,
-  onOpenSkills,
   onOpenMemory,
   onOpenAgents,
   onOpenAnalytics,
   onOpenSettings,
 }: Props) {
   const { sops } = useSops();
-  const { skills } = useSkills();
   const { memories } = useMemories();
   const { agents, agentById } = useAgents();
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -249,7 +253,18 @@ export default function Sidebar({
     };
   }
 
-  async function shareChat(chat: ChatRecord) {
+  async function shareChat(listed: ChatRecord) {
+    // The sidebar's list holds titles only for chats that haven't been opened; get the messages first.
+    let chat = listed;
+    if (listed.partial) {
+      try {
+        const res = await fetch(`/chat/history/${listed.id}`);
+        if (!res.ok) return;
+        chat = (await res.json()) as ChatRecord;
+      } catch {
+        return;
+      }
+    }
     const transcript = chat.messages
       .filter((message) => message.kind !== "approval")
       .map((message) =>
@@ -527,15 +542,6 @@ export default function Sidebar({
         </button>
 
         <button
-          className={`sidebar-nav-item${activePanel === "skills" ? " active" : ""}`}
-          onClick={onOpenSkills}
-        >
-          <Zap size={13} />
-          <span>Skills</span>
-          {skills !== null && <span className="sidebar-sops-count">{skills.length}</span>}
-        </button>
-
-        <button
           className={`sidebar-nav-item${activePanel === "memory" ? " active" : ""}`}
           onClick={onOpenMemory}
         >
@@ -558,6 +564,9 @@ export default function Sidebar({
         <div className="sidebar-section-label">
           <span>Chats</span>
           <span className="sidebar-section-actions">
+            <button className="icon-btn muted" onClick={onOpenSearch} title={`Search chats (${isMac ? "⌘K" : "Ctrl+K"})`} aria-label="Search chats and messages">
+              <Search size={15} />
+            </button>
             <button className="icon-btn muted" onClick={() => openFolderModal({ kind: "create" })} title="New folder" aria-label="New folder">
               <FolderPlus size={15} />
             </button>
@@ -568,7 +577,8 @@ export default function Sidebar({
         </div>
         <div className="sidebar-list">
           {chats.length === 0 && folders.length === 0 && (
-            <div className="sidebar-empty">No conversations yet.</div>
+            // Until the list has arrived, "none yet" would be a guess.
+            <div className="sidebar-empty" role="status">{chatsLoading ? "Loading chats…" : "No conversations yet."}</div>
           )}
           {folders.map((folder) => {
             const items = chats.filter((c) => c.folderId === folder.id);

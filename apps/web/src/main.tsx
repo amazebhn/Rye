@@ -9,7 +9,9 @@ import { EnvProvider } from "./contexts/EnvContext";
 import { publishApiMutations } from "./utils/sync";
 import "allo-font";
 import "./index.css"
+import { initTheme } from "./utils/theme";
 
+initTheme();
 publishApiMutations();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

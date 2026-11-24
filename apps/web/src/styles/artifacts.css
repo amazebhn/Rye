@@ -74,6 +74,10 @@
 .artifact-card-icon--docx { color: #2b5797; }
 .artifact-card-icon--html { color: #b4532a; }
 .artifact-card-icon--json { color: #9a6a12; }
+:root[data-theme="dark"] .artifact-card-icon--csv { color: #6cbf8f; }
+:root[data-theme="dark"] .artifact-card-icon--docx { color: #7fa8e6; }
+:root[data-theme="dark"] .artifact-card-icon--html { color: #e58e66; }
+:root[data-theme="dark"] .artifact-card-icon--json { color: #d6a54a; }
 
 .artifact-card-text {
   display: flex;

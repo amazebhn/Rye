@@ -1,4 +1,24 @@
 :root {
+  /*
+   * Accent presets (Settings → Appearance). The accent tokens below point at blue; data-accent on <html>
+   * (utils/theme.ts) repoints them, in the rules after the dark palette. Each has a light value here and a
+   * dark one further down. Light values are no fainter than blue on any surface; dark ones clear 4.5:1 on all.
+   */
+  --accent-blue:         #2383e2;
+  --accent-blue-alt:     #0b6bcb;
+  --accent-graphite:     #5f5e5a;
+  --accent-graphite-alt: #37352f;
+  --accent-green:        #16855a;
+  --accent-green-alt:    #0e6b47;
+  --accent-teal:         #0e8594;
+  --accent-teal-alt:     #086b78;
+  --accent-purple:       #7c5cd6;
+  --accent-purple-alt:   #6443bd;
+  --accent-pink:         #d1447f;
+  --accent-pink-alt:     #b3306a;
+  --accent-orange:       #c8620d;
+  --accent-orange-alt:   #a84e06;
+
   /* Sidebar palette (Notion off-white) */
   --color-bg:            #f7f7f5;
   --color-surface:       #efeeec;
@@ -10,13 +30,14 @@
   --color-fg-muted:      #6b6a64;
   --color-fg-light:      #4a4946;
   --color-fg:            #37352f;
-  --color-accent:        #2383e2;
+  --color-accent:        var(--accent-blue);
   --color-code:          #eb5757;
   --color-success:       #0f7b6c;
   --color-success-bg:    #ddedea;
   --color-danger:        #e03e3e;
   --color-danger-hover:  #c93434;
   --color-danger-bg:     #fbe4e4;
+  --color-on-danger:     #ffffff; /* text on a solid --color-danger fill */
 
   /* Floating sidebar menu */
   --sidebar-menu-bg:             var(--main-bg);
@@ -39,8 +60,8 @@
   --main-fg:             #37352f;
   --main-fg-muted:       #6b6a64;
   --main-fg-faint:       #b4b3ad;
-  --main-accent:         #2383e2;
-  --main-accent-alt:     #0b6bcb;
+  --main-accent:         var(--accent-blue);
+  --main-accent-alt:     var(--accent-blue-alt);
   --main-code-bg:        #f7f6f3;
   --main-code:           #eb5757;
   --main-success:        #0f7b6c;
@@ -91,14 +112,98 @@
   --shadow-popover:      0 4px 16px rgba(15, 23, 42, 0.08);
   --shadow-dialog:       0 1px 2px rgba(15, 23, 42, 0.06), 0 16px 36px -8px rgba(15, 23, 42, 0.22);
   --shadow-modal:        0 0 0 1px rgba(16, 24, 40, 0.06), 0 4px 8px -2px rgba(16, 24, 40, 0.06), 0 24px 48px -12px rgba(16, 24, 40, 0.22);
+  --shadow-float:        0 12px 28px -8px rgba(16, 24, 40, 0.22), 0 2px 6px rgba(16, 24, 40, 0.06); /* menus and pickers over content */
+  --scrim:               rgba(16, 24, 40, 0.42); /* backdrop behind modals and the search dialog */
 
   /* Focus rings */
   --focus-ring-soft:     0 0 0 3px color-mix(in srgb, var(--main-accent) 9%, transparent);
   --focus-ring:          0 0 0 3px color-mix(in srgb, var(--main-accent) 16%, transparent);
 }
 
-/* Dark palette is opt-in until Rye has a user-facing theme control. */
+/*
+ * Dark palette. utils/theme.ts sets data-theme on <html> from the stored preference (system / light / dark).
+ * Warm neutral greys to match the light theme. Surfaces get lighter as they rise: sidebar < content < cards < hover.
+ * Text tiers are checked against every surface they sit on: fg and muted at 4.5:1 or better, faint and dim at 3:1.
+ */
 :root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Accent presets */
+  --accent-blue:         #5ea8f2;
+  --accent-blue-alt:     #86bdf6;
+  --accent-graphite:     #c4c1b9;
+  --accent-graphite-alt: #dedbd4;
+  --accent-green:        #5cc292;
+  --accent-green-alt:    #86d4ae;
+  --accent-teal:         #4fc0cf;
+  --accent-teal-alt:     #7fd3de;
+  --accent-purple:       #a995f0;
+  --accent-purple-alt:   #c2b3f6;
+  --accent-pink:         #f083ae;
+  --accent-pink-alt:     #f5a6c5;
+  --accent-orange:       #f0975a;
+  --accent-orange-alt:   #f5b285;
+
+  /* Sidebar */
+  --color-bg:            #171615;
+  --color-surface:       #232220;
+  --color-surface-alt:   #2d2c29;
+  --color-border-subtle: #1f1e1c;
+  --color-border:        #302f2b;
+  --color-fg-faint:      #85827a;
+  --color-fg-dim:        #96938b;
+  --color-fg-muted:      #aaa79f;
+  --color-fg-light:      #cbc8c1;
+  --color-fg:            #e8e6e0;
+  --color-accent:        var(--accent-blue);
+  --color-code:          #f0887e;
+  --color-success:       #54b9a5;
+  --color-success-bg:    #1c332e;
+  --color-danger:        #f1736c;
+  --color-danger-hover:  #f48c86;
+  --color-danger-bg:     #3b201f;
+  --color-on-danger:     #1d1c1a;
+
+  /* Main content area */
+  --main-bg:             #1d1c1a;
+  --main-surface:        #272623;
+  --main-surface-alt:    #31302c;
+  --main-border:         #3a3834;
+  --main-border-subtle:  #2c2b28;
+  --main-fg:             #e8e6e0;
+  --main-fg-muted:       #aaa79f;
+  --main-fg-faint:       #85827a;
+  --main-accent:         var(--accent-blue);
+  --main-accent-alt:     var(--accent-blue-alt);
+  --main-code-bg:        #272623;
+  --main-code:           #f0887e;
+  --main-success:        #54b9a5;
+  --main-primary-hover:  #ffffff;
+  --main-ai-accent:      #9395f5;
+  --main-warning-text:   #e3b15e;
+
+  /* Approval prompt choices */
+  --main-approve-selected: #ffffff;
+  --main-deny-fg:          #ee9a94;
+  --main-deny-bg:          #2b1f1e;
+  --main-deny-border:      #6b3f3c;
+
+  /* Elevation: black shadows read weakly on dark, so they are heavier and the modal keeps a light hairline. */
+  --shadow-xs:           0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm:           0 4px 14px -6px rgba(0, 0, 0, 0.5);
+  --shadow-md:           0 6px 18px -10px rgba(0, 0, 0, 0.55);
+  --shadow-lg:           0 14px 36px -16px rgba(0, 0, 0, 0.65);
+  --shadow-popover:      0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-dialog:       0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 36px -8px rgba(0, 0, 0, 0.6);
+  --shadow-modal:        0 0 0 1px rgba(255, 255, 255, 0.06), 0 4px 8px -2px rgba(0, 0, 0, 0.3), 0 24px 48px -12px rgba(0, 0, 0, 0.65);
+  --shadow-float:        0 12px 28px -8px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --scrim:               rgba(0, 0, 0, 0.6);
+
+  /* Focus rings */
+  --focus-ring-soft:     0 0 0 3px color-mix(in srgb, var(--main-accent) 18%, transparent);
+  --focus-ring:          0 0 0 3px color-mix(in srgb, var(--main-accent) 30%, transparent);
+
+  /* Chart series: validated as a set, keep the order. */
   --chart-1:             #3987e5;
   --chart-2:             #d95926;
   --chart-3:             #199e70;
@@ -107,20 +212,34 @@
   --chart-6:             #0ca30c;
   --chart-7:             #9085e9;
   --chart-8:             #e66767;
-  --sidebar-menu-bg:             #252525;
-  --sidebar-menu-fg:             #f1f1f1;
-  --sidebar-menu-fg-disabled:    #a0a0a0;
-  --sidebar-menu-border:         rgba(255, 255, 255, 0.07);
-  --sidebar-menu-hover:          #343434;
-  --sidebar-menu-trigger-bg:     #303030;
-  --sidebar-menu-danger:         #ff7770;
-  --sidebar-menu-danger-hover:   rgba(231, 76, 68, 0.12);
+
+  /* Floating sidebar menu: one step above the content surface */
+  --sidebar-menu-bg:             #262522;
+  --sidebar-menu-fg:             #eeece6;
+  --sidebar-menu-fg-disabled:    #8f8c85;
+  --sidebar-menu-border:         rgba(255, 255, 255, 0.08);
+  --sidebar-menu-hover:          #34332f;
+  --sidebar-menu-trigger-bg:     #2d2c29;
+  --sidebar-menu-danger:         #f58279;
+  --sidebar-menu-danger-hover:   rgba(241, 115, 108, 0.14);
   --sidebar-menu-focus:          rgba(255, 255, 255, 0.7);
   --sidebar-menu-shadow:         0 18px 44px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.22);
 
   --main-warning:        #f0a95a;
   --main-warning-bg:     rgba(230, 150, 60, 0.14);
 }
+
+/*
+ * The chosen accent. No attribute means blue. Each rule repoints the accent tokens at a preset, whose own
+ * light and dark values are set above, so one rule serves both themes. The dark selector is repeated so the
+ * rule outranks the dark palette (which sets the same tokens) wherever it sits in the file.
+ */
+:root[data-accent="graphite"], :root[data-theme="dark"][data-accent="graphite"] { --color-accent: var(--accent-graphite); --main-accent: var(--accent-graphite); --main-accent-alt: var(--accent-graphite-alt); }
+:root[data-accent="green"],    :root[data-theme="dark"][data-accent="green"]    { --color-accent: var(--accent-green);    --main-accent: var(--accent-green);    --main-accent-alt: var(--accent-green-alt); }
+:root[data-accent="teal"],     :root[data-theme="dark"][data-accent="teal"]     { --color-accent: var(--accent-teal);     --main-accent: var(--accent-teal);     --main-accent-alt: var(--accent-teal-alt); }
+:root[data-accent="purple"],   :root[data-theme="dark"][data-accent="purple"]   { --color-accent: var(--accent-purple);   --main-accent: var(--accent-purple);   --main-accent-alt: var(--accent-purple-alt); }
+:root[data-accent="pink"],     :root[data-theme="dark"][data-accent="pink"]     { --color-accent: var(--accent-pink);     --main-accent: var(--accent-pink);     --main-accent-alt: var(--accent-pink-alt); }
+:root[data-accent="orange"],   :root[data-theme="dark"][data-accent="orange"]   { --color-accent: var(--accent-orange);   --main-accent: var(--accent-orange);   --main-accent-alt: var(--accent-orange-alt); }
 
 html,
 body {

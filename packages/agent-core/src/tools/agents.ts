@@ -34,7 +34,7 @@ export const agentTools: Tool[] = [
       ),
       tool_groups: Type.Optional(
         Type.Array(Type.String(), {
-          description: "Optional list of tool groups to pre-load (e.g. ['mysql', 'aws', 'code_search', 'jira', 'git', 'results', 'artifacts']).",
+          description: "Optional list of tool groups to pre-load (e.g. ['sql', 'aws', 'code_search', 'jira', 'git', 'results', 'artifacts']).",
         }),
       ),
     }),

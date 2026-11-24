@@ -60,6 +60,266 @@
   margin-top: 12px;
 }
 
+/* Chat search dialog: a wide panel near the top of the window with the field, results and key hints. */
+.chat-search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 650;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 11vh 24px 24px;
+  background: var(--scrim);
+  font-family: var(--font-ui);
+  animation: chat-search-fade 0.12s ease-out;
+}
+.chat-search-dialog {
+  width: 680px;
+  max-width: 100%;
+  max-height: min(640px, 78vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--main-bg);
+  color: var(--main-fg);
+  box-shadow: var(--shadow-modal);
+  animation: chat-search-rise 0.14s ease-out;
+}
+@keyframes chat-search-fade { from { opacity: 0; } }
+@keyframes chat-search-rise { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .chat-search-overlay,
+  .chat-search-dialog { animation: none; }
+}
+
+.chat-search-field {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  height: 54px;
+  border-bottom: 1px solid var(--main-border);
+  color: var(--main-fg-muted);
+}
+.chat-search-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--main-fg);
+  font: inherit;
+  font-size: 16px;
+}
+.chat-search-field input::placeholder { color: var(--main-fg-faint); }
+.chat-search-dialog kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-xs);
+  background: var(--main-surface);
+  color: var(--main-fg-muted);
+  font: inherit;
+  font-size: 12px;
+}
+
+/* Shown in the field while a search is running. */
+.chat-search-spinner {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--main-border);
+  border-top-color: var(--main-fg-muted);
+  border-radius: 50%;
+  animation: chat-search-spin 0.7s linear infinite;
+}
+@keyframes chat-search-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .chat-search-spinner { animation: none; }
+}
+/* Results from the previous query, kept on screen (dimmed) so the list doesn't blink while typing. */
+.chat-search-section.is-stale { opacity: 0.55; }
+/* One kind of result (chats, agents, ...) under its own label. */
+.chat-search-section + .chat-search-section,
+.chat-search-section + .chat-search-more {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--main-border);
+}
+.chat-search-section > .chat-search-hit:last-child { padding-bottom: 2px; }
+
+/* An agent: avatar, name and handle, and a line of what it is for. */
+.chat-search-list [data-kind="agent"] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+}
+.chat-search-agent-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chat-search-agent-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--main-fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+.chat-search-agent-name .chat-search-title-text { flex: 0 1 auto; }
+.chat-search-agent-handle {
+  flex-shrink: 0;
+  color: var(--main-fg-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+.chat-search-agent-detail {
+  overflow: hidden;
+  color: var(--main-fg-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-search-list {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+}
+.chat-search-empty {
+  padding: 36px 16px;
+  color: var(--main-fg-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.chat-search-group {
+  padding: 4px 10px 6px;
+  color: var(--main-fg-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+.chat-search-hit { padding: 2px 0 8px; }
+.chat-search-hit + .chat-search-hit {
+  padding-top: 8px;
+  border-top: 1px solid var(--main-border);
+}
+
+/* A chat's title line: a heading above its messages, or the row to open when only the title matched. */
+.chat-search-heading,
+.chat-search-list [data-kind="chat"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  color: var(--main-fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+.chat-search-heading svg,
+.chat-search-list [data-kind="chat"] svg {
+  flex-shrink: 0;
+  color: var(--main-fg-faint);
+}
+.chat-search-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-search-when {
+  flex-shrink: 0;
+  color: var(--main-fg-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* A matching message, indented under its chat. */
+.chat-search-list [data-kind="message"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-left: 14px;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  color: var(--main-fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.chat-search-list [data-kind="message"] svg {
+  flex-shrink: 0;
+  margin-top: 4px;
+  color: var(--main-fg-faint);
+}
+/* Two lines of excerpt; the chat itself has the rest. */
+.chat-search-snippet-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.chat-search-role {
+  margin-right: 6px;
+  color: var(--main-fg);
+  font-weight: 600;
+}
+/* Marks a message found by meaning, where no word of the query is highlighted. */
+.chat-search-related {
+  margin-right: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-pill);
+  color: var(--main-fg-muted);
+  font-size: 12px;
+}
+.chat-search-list [role="option"] { cursor: pointer; }
+.chat-search-list [role="option"].is-active { background: var(--main-surface-alt); }
+.chat-search-list mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--main-accent) 22%, transparent);
+  color: var(--main-fg);
+}
+.chat-search-more {
+  padding: 2px 10px 0 45px;
+  color: var(--main-fg-faint);
+  font-size: 12px;
+}
+
+.chat-search-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--main-border);
+  background: var(--main-surface);
+  color: var(--main-fg-muted);
+  font-size: 12px;
+}
+.chat-search-footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.chat-search-count { margin-left: auto; }
+
 .sidebar-section-label {
   padding: 6px 14px 4px;
   font-size: 12px;

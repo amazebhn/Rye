@@ -48,7 +48,7 @@ export function toolStatus(tc: ToolCall, live: boolean, awaiting: boolean): Tool
 
 function toolIcon(name: string): LucideIcon {
   if (name.startsWith("mcp__") || name === "WebSearch" || name === "WebFetch") return Globe;
-  if (/^(mysql|result)_/.test(name)) return Database;
+  if (/^(sql|mysql|result)_/.test(name)) return Database;
   if (/^(cloudwatch|rds|ecs|ec2|alb)_/.test(name)) return Cloud;
   if (name.startsWith("git_")) return GitBranch;
   if (name.startsWith("jira_")) return Ticket;
@@ -129,7 +129,7 @@ function ToolResult({ tc, sessionId, onNewChat }: ResultProps) {
   // The marker text is for the model; the user gets the real table instead.
   if (storedResultId) return <ResultTable resultId={storedResultId} sessionId={sessionId} />;
 
-  const isSqlTool = tc.name === "mysql_query_tool" || tc.name === "mysql_schema_tool";
+  const isSqlTool = /^(sql|mysql)_(query|schema)_tool$/.test(tc.name);
 
   function openInNewChat() {
     if (!onNewChat || !result) return;

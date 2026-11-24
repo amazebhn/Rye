@@ -81,6 +81,8 @@ stt_command = ""
 base_url = "http://localhost:11434"
 model = "llama3.1"
 embedding_model = "nomic-embed-text"
+# Changing embedding_model means reindexing (Settings → Search does it and keeps the previous
+# model's vectors as a backup to switch back to).
 # Context window in tokens; long chats are summarised at ~72% of it.
 # Match the context length Ollama runs the model with (OLLAMA_CONTEXT_LENGTH / num_ctx).
 context_window = 32768
@@ -123,6 +125,26 @@ compaction = "medium"   # summarizing long conversations
 extraction = "medium"   # capturing SOPs and Skills from a chat
 doc_review = "low"      # AI Editor suggested edits
 labels = "low"          # chat titles and step summaries
+
+# ---------------------------------------------------------------------------
+# Reranker — re-reads the knowledge notes a search found against the question,
+# so only relevant ones are attached to a message and searches return the best
+# first. If it fails or takes over 6 s, search carries on without it.
+#   provider = "off"      — no reranking (default)
+#   provider = "decision" — the decision model below judges every note in one request
+#   provider = "ollama"   — a chat model in Ollama answers yes/no per note
+#                           (model = e.g. "llama3.2"). Not zerank or bge-reranker:
+#                           Ollama can't score those.
+#   provider = "server"   — a /v1/rerank server, e.g. `llama-server --rerank`
+#                           (url = its address, model = optional name). This is
+#                           how zerank and cross-encoder rerankers run.
+# Also on the app's Settings → Search page (stored in model-settings.json).
+# RYE_RERANK_PROVIDER, RYE_RERANK_MODEL, RYE_RERANK_URL
+# ---------------------------------------------------------------------------
+[rerank]
+provider = "off"
+model = ""
+url = ""
 
 # ---------------------------------------------------------------------------
 # Decision model — picks which tool groups each message needs, to cut the
@@ -218,7 +240,42 @@ region = "us-east-1"
 # secret_access_key = ""
 
 # ---------------------------------------------------------------------------
-# MySQL (read-only)
+# Databases (read-only): any number of named connections, MySQL or PostgreSQL
+#
+# Each [databases.<name>] is one connection. The agent sees the names, engines,
+# default databases and descriptions (never hosts or credentials) and passes a
+# name as `connection` to its SQL tools; the first one is the default.
+# Queries are read-only: PostgreSQL runs them in a read-only transaction the
+# server enforces, MySQL statements are checked before they are sent. Use a
+# read-only database user as well.
+# ---------------------------------------------------------------------------
+# [databases.orders]
+# type = "postgres"                  # "postgres" or "mysql"
+# host = "orders-db.internal"
+# port = 5432                        # default: 5432 for postgres, 3306 for mysql
+# user = "readonly"
+# password_env = "ORDERS_DB_PASSWORD"  # read the password from this environment variable (or .env)…
+# # password = "secret"                # …or put it here
+# database = "orders"                # default database (postgres) / schema (mysql)
+# ssl = true                         # connect over TLS; hosted Postgres usually needs it
+# description = "Orders service: orders, payments, refunds"
+#
+# A connection URL can replace the separate fields (they win where both are set):
+# [databases.analytics]
+# type = "postgres"
+# url = "postgres://readonly:secret@warehouse.internal:5432/analytics?sslmode=require"
+#
+# [databases.legacy]
+# type = "mysql"
+# host = "legacy-db.internal"
+# user = "readonly"
+# password_env = "LEGACY_DB_PASSWORD"
+# database = "appdb"
+
+# ---------------------------------------------------------------------------
+# MySQL (read-only): the original single-connection form, still supported.
+# It is the connection named "mysql". Prefer [databases.<name>] above for new
+# setups, and for more than one database.
 # RYE_MYSQL_HOST, RYE_MYSQL_PORT, RYE_MYSQL_USER, RYE_MYSQL_PASSWORD,
 # RYE_MYSQL_DATABASE
 # ---------------------------------------------------------------------------
@@ -253,7 +310,7 @@ default_workspace = ""
 # ---------------------------------------------------------------------------
 # Environments
 # Define named environments to let the agent switch connectors at runtime.
-# Each environment can override any subset of [mysql], [aws], [jira], [git].
+# Each environment can override any subset of [databases.*], [mysql], [aws], [jira], [git].
 # The active environment is persisted to ~/.local/share/rye/active-env.
 # The agent can switch via the switch_env_tool, or use the UI picker.
 #
@@ -271,6 +328,13 @@ port = 3306
 user = "readonly"
 password = "secret"
 database = "appdb"
+
+# Named connections are changed per environment field by field: this points the
+# "orders" connection at QA and keeps everything else from [databases.orders].
+# An environment can also define connections the base doesn't have (give those a type).
+# [environments.qa.databases.orders]
+# host = "orders-db.qa.internal"
+# password_env = "ORDERS_DB_PASSWORD_QA"
 
 [environments.qa.aws]
 region = "us-east-1"

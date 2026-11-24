@@ -80,11 +80,32 @@ export function blobToFloat32(buf: Uint8Array | Buffer): number[] {
 // Ollama embeddings
 // ---------------------------------------------------------------------------
 
-async function embedViaOllama(texts: string[]): Promise<{ vectors: number[][]; model: string } | null> {
+/**
+ * What some embedding models expect in front of a search query (never in front of the
+ * documents being searched). Models not listed take queries as they are.
+ */
+export function queryPrefix(model: string): string {
+  // F2LLM and Qwen3-Embedding: an instruction, then the query.
+  if (/f2llm|qwen3[^/]*embed/i.test(model)) return "Instruct: Given a question, retrieve passages that can help answer the question.\nQuery: ";
+  return "";
+}
+
+/** The embedding model Ollama is asked for: the one notes and messages should be indexed with. */
+export function configuredEmbeddingModel(): string {
+  return getSettings().ollama.embedding_model.trim();
+}
+
+async function embedViaOllama(texts: string[], kind: "document" | "query" = "document"): Promise<{ vectors: number[][]; model: string } | null> {
   const cfg = getSettings();
   const baseUrl = cfg.ollama.base_url.replace(/\/+$/, "");
   const model = cfg.ollama.embedding_model;
   if (!baseUrl || !model) return null;
+  if (kind === "query") {
+    const prefix = queryPrefix(model);
+    if (prefix) texts = texts.map((t) => prefix + t);
+  }
+  // A large model takes a while over a batch (and longer still to load), so the allowance grows with the batch.
+  const timeout = Math.min(EMBED_TIMEOUT_MS + texts.length * 3000, 180_000);
 
   // Prefer the modern /api/embed batch endpoint; fall back to legacy /api/embeddings.
   try {
@@ -92,7 +113,7 @@ async function embedViaOllama(texts: string[]): Promise<{ vectors: number[][]; m
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: texts }),
-      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeout),
     });
     if (res.ok) {
       const data = (await res.json()) as { embeddings?: number[][] };
@@ -209,6 +230,32 @@ export async function embedBatch(texts: string[]): Promise<EmbeddingResult[] | n
 
   lastStatus = { provider: "none", model: null, available: false };
   return null;
+}
+
+/**
+ * Embed with the local model (Ollama) only, never a hosted fallback. Used for
+ * chat history, which should not be sent to a service the user didn't pick
+ * for those conversations.
+ */
+export async function embedBatchLocal(texts: string[]): Promise<EmbeddingResult[] | null> {
+  if (texts.length === 0) return [];
+  const ollama = await embedViaOllama(texts);
+  return ollama ? ollama.vectors.map((vector) => ({ vector, provider: "ollama", model: ollama.model })) : null;
+}
+
+export async function embedTextLocal(text: string): Promise<EmbeddingResult | null> {
+  return (await embedBatchLocal([text]))?.[0] ?? null;
+}
+
+/** Embed a search query (as opposed to text being indexed) with the local model only. */
+export async function embedQueryLocal(text: string): Promise<EmbeddingResult | null> {
+  const ollama = await embedViaOllama([text], "query");
+  return ollama ? { vector: ollama.vectors[0], provider: "ollama", model: ollama.model } : null;
+}
+
+/** Embed a search query: Ollama first, with the model's query prefix, then the hosted fallback. */
+export async function embedQuery(text: string): Promise<EmbeddingResult | null> {
+  return (await embedQueryLocal(text)) ?? (getSettings().llm_provider.includes("copilot") ? embedText(text) : null);
 }
 
 /** Embed a single text string. Returns null if no embedding provider is reachable. */

@@ -61,13 +61,13 @@ describe("ChatStore folder fields", () => {
     expect(chats.get("a")?.folderSuggestionDismissed).toBeUndefined();
   });
 
-  test("filed chats don't count toward the history cap", () => {
+  test("no chat is dropped for being old, filed or not", () => {
     const { chats } = setup();
     chats.upsert({ ...chat("old"), updatedAt: 0 });
     chats.setFolderFields(["old"], { folderId: "f1" });
     for (let i = 0; i < 55; i++) chats.upsert({ ...chat(`c${i}`), updatedAt: 10 + i });
     expect(chats.get("old")?.folderId).toBe("f1");
-    expect(chats.list().filter((c) => !c.folderId)).toHaveLength(50);
+    expect(chats.list().filter((c) => !c.folderId)).toHaveLength(55);
   });
 });
 

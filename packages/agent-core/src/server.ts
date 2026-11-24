@@ -14,7 +14,7 @@
  *   ALL  /copilot/*        — transparent proxy → api.githubcopilot.com (adds auth headers)
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { stream as honoStream } from "hono/streaming";
 import { z } from "zod";
@@ -29,6 +29,8 @@ import { knowledgeRoutes } from "./knowledge/routes.js";
 import { AgentStore, type AgentDefinition } from "./agents/store.js";
 import { agentRoutes } from "./agents/routes.js";
 import { speechRoutes } from "./speech/routes.js";
+import { LEGACY_MYSQL_NAME, engineName, listConnections } from "./db/connections.js";
+import { driverFor, errorText } from "./db/drivers.js";
 import { readAgentSettings, chattinessPolicy } from "./agents/settings.js";
 import { pickAutoRoutedAgent, pickFollowUpAgent, type RecentTurn } from "./agents/router.js";
 import { ChatStore } from "./chat/store.js";
@@ -48,10 +50,19 @@ import {
   completeMcpOAuth,
   getMcpOAuthAuthorization,
   getServerStatuses,
+  getServerTools,
   initMcp,
   reloadMcp,
 } from "./mcp/client.js";
-import { MCP_CONFIG_FILE } from "./mcp/config.js";
+import {
+  MCP_CONFIG_FILE,
+  listMcpServerEntries,
+  removeMcpServer,
+  setMcpServerDisabled,
+  writeMcpServer,
+  type McpServerDefinition,
+  type McpServerEntry,
+} from "./mcp/config.js";
 import { extractSopFromChat } from "./sop/extractor.js";
 import { extractSkillFromChat } from "./skill/extractor.js";
 import { runAgent, clearSession, generateChatTitle, generateEditSuggestions, rewindSession } from "./agent/loop.js";
@@ -59,10 +70,12 @@ import type { RewindTurn } from "./agent/loop.js";
 import { turnMessage } from "./agent/continue.js";
 import { editSuggestionKey, getCachedEditSuggestions, setCachedEditSuggestions } from "./edit-suggestions/cache.js";
 import { resolveTaskModelId, resolveTierModelId } from "./model-tiers.js";
-import { getPendingDraft, clearPendingDraft, setAgentStore } from "./tools/index.js";
+import { getPendingDraft, clearPendingDraft, setAgentStore, setChatStore } from "./tools/index.js";
 import { getSettings, settings, CONFIG_FILE, getEffectiveSettings, getActiveEnv, setActiveEnv, setRuntimeModel, MODEL_TIERS, MODEL_SETTINGS_FILE, ModelOverridesSchema, readModelOverrides, writeModelOverrides } from "./config.js";
 import type { LlmProvider, ModelOverrides } from "./config.js";
 import { CLEF_MODELS, clefTarget, ollamaDecisionModelsOrEmpty, resolveDecisionModelId, warmOllamaDecisionModel } from "./decision/index.js";
+import { listOllamaModels, probeEmbeddingModel, sameModel } from "./embeddings/models.js";
+import { ollamaRerankProblem } from "./embeddings/rerank.js";
 import { getCopilotBearerToken } from "./copilot-auth.js";
 import { copilotFetch, fetchCopilotModels, readModelsCache, supportsChatCompletions } from "./copilot-models.js";
 import { fetchOllamaModels } from "./llm-provider.js";
@@ -92,6 +105,7 @@ setAgentStore(agentStore);
 
 // Shared chat history store instance
 const chatStore = new ChatStore();
+setChatStore(chatStore);
 const chatFolderStore = new ChatFolderStore();
 
 // Shared usage tracking store instance
@@ -258,7 +272,7 @@ app.post("/chat/", async (c) => {
   const collabSettings = readAgentSettings();
 
   // Extract recent turns from persisted chat history (for decision-model routing context)
-  const existingChat = chatStore.list().find((ch) => ch.sessionId === sessionId);
+  const existingChat = chatStore.getBySession(sessionId);
   const recentTurns: RecentTurn[] = (existingChat?.messages ?? [])
     .slice(-6)
     .flatMap((m): RecentTurn[] => {
@@ -468,8 +482,21 @@ app.post("/chat/", async (c) => {
   }));
 });
 
+// The chat list. With ?summary=1 each chat comes without its messages (and with a messageCount),
+// which is what the web app loads at start; a chat's messages are fetched when it is opened.
 app.get("/chat/history", (c) => {
-  return c.json(chatStore.list());
+  return c.json(c.req.query("summary") ? chatStore.summaries() : chatStore.list());
+});
+
+app.get("/chat/history/:id", (c) => {
+  const chat = chatStore.get(c.req.param("id"));
+  return chat ? c.json(chat) : c.json({ error: "Chat not found" }, 404);
+});
+
+// Search chat titles and message text; the sidebar calls this as the user types.
+app.get("/chat/search", async (c) => {
+  const limit = Math.min(Math.max(1, Number(c.req.query("limit")) || 20), 50);
+  return c.json({ hits: await chatStore.search(c.req.query("q") ?? "", { limit }) });
 });
 
 app.put("/chat/history", async (c) => {
@@ -485,7 +512,8 @@ app.put("/chat/history", async (c) => {
     return c.json({ error: "Expected an array of chats or { chats: [...] }" }, 400);
   }
 
-  const saved = chatStore.replace(chats);
+  // Saves the chats given; chats left out are kept (only DELETE /chat/history/:id removes one).
+  const saved = chatStore.upsertMany(chats);
   return c.json({ status: "saved", count: saved.length });
 });
 
@@ -757,25 +785,29 @@ interface ConnectorStatus {
   error?: string;
 }
 
-async function checkMySQL(cfg: ReturnType<typeof getSettings>["mysql"]): Promise<ConnectorStatus> {
-  if (!cfg.host || !cfg.database) return { name: "MySQL", ok: false, error: "Not configured" };
-  try {
-    const looksUnresolved = /\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*|^[A-Z_][A-Z0-9_]*$/.test(cfg.password);
-    console.log(
-      `[checkMySQL] host=${cfg.host} port=${cfg.port} user=${cfg.user} password_set=${cfg.password ? "yes" : "no"} password_placeholder=${looksUnresolved} database=${cfg.database}`
-    );
-    const mysql = await import("mysql2/promise");
-    const conn = await mysql.createConnection({
-      host: cfg.host, port: cfg.port, user: cfg.user,
-      password: cfg.password, database: cfg.database,
-      connectTimeout: 4000,
-    });
-    await conn.ping();
-    await conn.end();
-    return { name: "MySQL", ok: true };
-  } catch (err) {
-    return { name: "MySQL", ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+/** One status per SQL connection of the active environment (MySQL and Postgres alike). */
+async function checkDatabases(cfg: ReturnType<typeof getSettings>): Promise<ConnectorStatus[]> {
+  const { connections, problems } = listConnections(cfg);
+  // The old [mysql] section keeps the label it always had.
+  const label = (name: string, type: "mysql" | "postgres") => (name === LEGACY_MYSQL_NAME ? "MySQL" : `${engineName(type)} · ${name}`);
+  const broken: ConnectorStatus[] = problems.map((p) => ({ name: `Database · ${p.name}`, ok: false, error: p.problem }));
+  const configured = connections.filter((c) => c.name !== LEGACY_MYSQL_NAME || c.database);
+  if (configured.length === 0 && broken.length === 0) return [{ name: "Databases", ok: false, error: "Not configured" }];
+  const checked = await Promise.all(
+    configured.map(async (conn): Promise<ConnectorStatus> => {
+      const looksUnresolved = /\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*|^[A-Z_][A-Z0-9_]*$/.test(conn.password);
+      console.log(
+        `[checkDatabase] ${conn.name} type=${conn.type} host=${conn.host} port=${conn.port} user=${conn.user} password_set=${conn.password ? "yes" : "no"} password_placeholder=${looksUnresolved} database=${conn.database} ssl=${conn.ssl}`,
+      );
+      try {
+        await driverFor(conn.type).ping(conn, 4000);
+        return { name: label(conn.name, conn.type), ok: true };
+      } catch (err) {
+        return { name: label(conn.name, conn.type), ok: false, error: errorText(err) };
+      }
+    }),
+  );
+  return [...checked, ...broken];
 }
 
 async function checkAWS(cfg: ReturnType<typeof getSettings>["aws"]): Promise<ConnectorStatus> {
@@ -871,13 +903,14 @@ app.get("/status", async (c) => {
   const results = await Promise.allSettled([
     ...(cfg.harness === "claude" ? [checkClaudeHarness()] : []),
     ...cfg.llm_provider.map((p) => checkLLM(cfg, p)),
-    checkMySQL(cfg.mysql),
+    checkDatabases(cfg),
     checkAWS(cfg.aws),
     checkJira(cfg.jira),
     checkGit(cfg.git),
   ]);
-  const statuses = results.map((r) =>
-    r.status === "fulfilled" ? r.value : { name: "unknown", ok: false, error: String(r.reason) }
+  // The database check returns one status per connection; the others return one each.
+  const statuses = results.flatMap((r): ConnectorStatus[] =>
+    r.status === "fulfilled" ? [r.value].flat() : [{ name: "unknown", ok: false, error: String(r.reason) }],
   );
   return c.json(statuses);
 });
@@ -886,13 +919,114 @@ app.get("/status", async (c) => {
 // MCP servers
 // ---------------------------------------------------------------------------
 
+/** Every server in mcp.json (disabled and invalid ones included) with how its connection is doing. */
+function mcpServerList() {
+  const statuses = new Map(getServerStatuses().map((s) => [s.name, s]));
+  let entries: McpServerEntry[] = [];
+  let fileError: string | undefined;
+  try {
+    entries = listMcpServerEntries();
+  } catch (err) {
+    fileError = err instanceof Error ? err.message : String(err);
+  }
+  const servers = entries.map((entry) => {
+    const status = statuses.get(entry.name);
+    return {
+      name: entry.name,
+      disabled: entry.disabled,
+      problems: entry.problems,
+      // As written in the file: secrets there are ${ENV} references, which is what the editor should show.
+      config: entry.config,
+      transport: entry.config.url ? entry.config.transport ?? "http" : entry.config.command ? "stdio" : "unknown",
+      connected: status?.connected ?? false,
+      toolCount: status?.toolCount ?? 0,
+      tools: getServerTools(entry.name),
+      ...(status?.error ? { error: status.error } : {}),
+      ...(entry.config.auth ? { auth: entry.config.auth } : {}),
+      ...(status?.authRequired ? { authRequired: true, authorizeUrl: status.authorizeUrl } : {}),
+    };
+  });
+  return { config_file: MCP_CONFIG_FILE, servers, ...(fileError ? { error: fileError } : {}) };
+}
+
+/**
+ * Changing mcp.json decides which commands this machine runs, so these routes only answer the
+ * app itself: a JSON body (which a web page on another site can't send without a preflight
+ * that CORS refuses) and, when the browser says where the request came from, a local origin.
+ */
+function refuseForeignMcpWrite(c: Context): Response | null {
+  if (!(c.req.header("content-type") ?? "").toLowerCase().startsWith("application/json")) {
+    return c.json({ error: "Send application/json." }, 415);
+  }
+  const origin = c.req.header("origin");
+  if (origin) {
+    let host = "";
+    try {
+      host = new URL(origin).hostname;
+    } catch {
+      // not a URL: refused below
+    }
+    if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(host)) return c.json({ error: "Not allowed from this origin." }, 403);
+  }
+  return null;
+}
+
 app.get("/mcp/servers", (c) => {
-  return c.json({ config_file: MCP_CONFIG_FILE, servers: getServerStatuses() });
+  return c.json(mcpServerList());
 });
 
 app.post("/mcp/reload", async (c) => {
   await reloadMcp();
-  return c.json({ status: "reloaded", servers: getServerStatuses() });
+  return c.json({ status: "reloaded", ...mcpServerList() });
+});
+
+// Add a server, or replace one (PUT). The definition is validated the same way as when the agent proposes one.
+const saveMcpServer = async (c: Context, name: string, replace: boolean) => {
+  const refused = refuseForeignMcpWrite(c);
+  if (refused) return refused;
+  const body = (await c.req.json().catch(() => null)) as { config?: unknown } | null;
+  if (!body || typeof body.config !== "object" || body.config === null) return c.json({ error: "Expected { config: { … } }." }, 400);
+  try {
+    writeMcpServer({ name, config: body.config as McpServerDefinition, replace });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+  await reloadMcp();
+  return c.json(mcpServerList(), replace ? 200 : 201);
+};
+
+app.post("/mcp/servers", async (c) => {
+  const body = (await c.req.raw.clone().json().catch(() => null)) as { name?: unknown } | null;
+  return saveMcpServer(c, typeof body?.name === "string" ? body.name.trim() : "", false);
+});
+
+app.put("/mcp/servers/:name", (c) => saveMcpServer(c, c.req.param("name"), true));
+
+// Turn a server off or on without losing its definition.
+app.patch("/mcp/servers/:name", async (c) => {
+  const refused = refuseForeignMcpWrite(c);
+  if (refused) return refused;
+  const body = (await c.req.json().catch(() => null)) as { disabled?: unknown } | null;
+  if (typeof body?.disabled !== "boolean") return c.json({ error: "Expected { disabled: true | false }." }, 400);
+  try {
+    if (!setMcpServerDisabled(c.req.param("name"), body.disabled)) return c.json({ error: "No such MCP server." }, 404);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+  await reloadMcp();
+  return c.json(mcpServerList());
+});
+
+app.delete("/mcp/servers/:name", async (c) => {
+  const refused = refuseForeignMcpWrite(c);
+  if (refused) return refused;
+  try {
+    if (!removeMcpServer(c.req.param("name"))) return c.json({ error: "No such MCP server." }, 404);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+  await reloadMcp();
+  return c.json(mcpServerList());
 });
 
 app.get("/mcp/oauth/start/:server", (c) => {
@@ -1262,6 +1396,63 @@ app.post("/models/select", async (c) => {
 // Model tiers — which model backs low/medium/high, and which tier each task uses
 // ---------------------------------------------------------------------------
 
+// Re-embedding the knowledge base and SOPs after the embedding model changes. One at a time, in the
+// background: a large model can take minutes, and the Settings page polls this while it runs.
+const reindexJob: { running: boolean; done: number; total: number; model: string | null; error: string | null; finished_at: number | null } = {
+  running: false, done: 0, total: 0, model: null, error: null, finished_at: null,
+};
+
+function startReindex(): boolean {
+  if (reindexJob.running) return false;
+  Object.assign(reindexJob, { running: true, done: 0, total: 0, model: getSettings().ollama.embedding_model, error: null, finished_at: null });
+  void (async () => {
+    try {
+      const result = await knowledgeStore.reindexAll((done, total) => Object.assign(reindexJob, { done, total }));
+      reindexJob.done = reindexJob.total = result.docs;
+      if (result.docs > 0 && !result.embedded) reindexJob.error = "The embedding model didn't answer, so notes are searchable by keyword only. Check that Ollama is running, then reindex again.";
+      else await sopStore.reembedAll();
+      // Message vectors swap to the new model at once and are filled in the background (by the local model only).
+      chatStore.useEmbeddingModel(getSettings().ollama.embedding_model);
+    } catch (err) {
+      reindexJob.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      Object.assign(reindexJob, { running: false, finished_at: Date.now() });
+    }
+  })();
+  return true;
+}
+
+async function retrievalPayload(cfg: ReturnType<typeof getSettings>, overrides: ModelOverrides) {
+  const installed = await listOllamaModels(cfg);
+  const model = cfg.ollama.embedding_model;
+  const knowledge = knowledgeStore.embeddingStatus();
+  const chats = chatStore.embeddingStatus();
+  // Notes indexed with another model can't be found by meaning until they are re-embedded. Only said when
+  // Ollama has the chosen model: without it a hosted fallback embeds, under its own model name.
+  const stale = knowledge.models.filter((m) => !sameModel(m.model, model)).reduce((n, m) => n + m.chunks, 0);
+  const usable = installed.some((m) => sameModel(m.name, model));
+  return {
+    embedding: {
+      model,
+      source: overrides.embedding_model ? "settings" : "config",
+      ollama_models: installed.filter((m) => m.capabilities.includes("embedding")).map((m) => m.name),
+      needs_reindex: usable && stale > 0,
+      knowledge,
+      chats,
+      reindex: reindexJob,
+    },
+    rerank: {
+      provider: cfg.rerank.provider,
+      model: cfg.rerank.model,
+      url: cfg.rerank.url,
+      source: overrides.rerank?.provider != null ? "settings" : cfg.rerank.provider !== "off" ? "config" : "default",
+      ollama_models: installed.filter((m) => m.capabilities.includes("completion")).map((m) => m.name),
+      problem: cfg.rerank.provider === "ollama" && cfg.rerank.model ? ollamaRerankProblem(cfg.rerank.model) : null,
+      decision_ready: cfg.decision.provider !== "off",
+    },
+  };
+}
+
 async function modelSettingsPayload() {
   const cfg = getSettings();
   const overrides = readModelOverrides();
@@ -1303,15 +1494,16 @@ async function modelSettingsPayload() {
       timeout_ms: cfg.decision.timeout_ms,
       tool_threshold: cfg.decision.tool_threshold,
     },
+    retrieval: await retrievalPayload(cfg, overrides),
     settings_file: MODEL_SETTINGS_FILE,
     config_file: CONFIG_FILE,
   };
 }
 
 // null in a PUT clears that decision override.
-function mergeDecisionOverrides(current: ModelOverrides["decision"], patch: ModelOverrides["decision"]) {
+function mergeDecisionOverrides<T extends object>(current: T | undefined, patch: T | undefined): T | undefined {
   const merged = Object.fromEntries(Object.entries({ ...current, ...patch }).filter(([, v]) => v != null));
-  return Object.keys(merged).length > 0 ? (merged as ModelOverrides["decision"]) : undefined;
+  return Object.keys(merged).length > 0 ? (merged as T) : undefined;
 }
 
 app.get("/models/settings", async (c) => c.json(await modelSettingsPayload()));
@@ -1320,13 +1512,33 @@ app.put("/models/settings", async (c) => {
   const parsed = ModelOverridesSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid settings" }, 400);
   const current = readModelOverrides();
-  writeModelOverrides({
+  const before = getSettings().ollama.embedding_model;
+  const wanted = parsed.data.embedding_model;
+  if (wanted && !sameModel(wanted, before)) {
+    if (reindexJob.running) return c.json({ error: "Reindexing is still running. Change the embedding model when it has finished." }, 409);
+    // A model that can't load would leave search with no vectors at all, so it is tried before it is saved.
+    const probe = await probeEmbeddingModel(getSettings(), wanted);
+    if (!probe.ok) return c.json({ error: `Ollama can't embed with ${wanted}: ${probe.error}` }, 400);
+  }
+  const next: ModelOverrides = {
     ...current,
     ...parsed.data,
     tasks: { ...current.tasks, ...parsed.data.tasks },
     decision: mergeDecisionOverrides(current.decision, parsed.data.decision),
-  });
+    rerank: mergeDecisionOverrides(current.rerank, parsed.data.rerank),
+  };
+  // null clears the override, so config.toml's model applies again.
+  if (next.embedding_model == null) delete next.embedding_model;
+  writeModelOverrides(next);
   if (parsed.data.decision) warmOllamaDecisionModel(getSettings());
+  // The old vectors are set aside and the new model's are made (or brought back from the backup) straight away.
+  if (!sameModel(getSettings().ollama.embedding_model, before)) startReindex();
+  return c.json(await modelSettingsPayload());
+});
+
+// Embed the knowledge base again with the current model (also the way back to a previous model's backup).
+app.post("/models/embeddings/reindex", async (c) => {
+  if (!startReindex()) return c.json({ error: "Reindexing is already running." }, 409);
   return c.json(await modelSettingsPayload());
 });
 

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import type { PendingPrompt, SSEEvent } from "@rye/shared";
 
 import type { AgentRecord, ChatRecord, MessageMeta, RenderMessage } from "./utils/types";
+import { chatSaveBody } from "./utils/types";
 import { isPermissionPrompt } from "./utils/approval";
 import { onSyncMessage, publish, useSyncRefresh } from "./utils/sync";
 import { useSops } from "./contexts/SopContext";
@@ -10,6 +11,7 @@ import { useMemories } from "./contexts/MemoryContext";
 import { useAgents } from "./contexts/AgentContext";
 import { useEnv } from "./contexts/EnvContext";
 import Sidebar from "./components/shell/Sidebar";
+import ChatSearchModal from "./components/shell/ChatSearch";
 import ChatHeader from "./components/chat/ChatHeader";
 import MessageList from "./components/chat/MessageList";
 import MessageInput from "./components/chat/MessageInput";
@@ -17,7 +19,7 @@ import SopPanel from "./components/sops/SopPanel";
 import SkillPanel from "./components/skills/SkillPanel";
 import MemoryPanel from "./components/memory/MemoryPanel";
 import AgentPanel from "./components/agents/AgentPanel";
-import SettingsPanel from "./components/settings/SettingsPanel";
+import SettingsPanel, { type SettingsTab } from "./components/settings/SettingsPanel";
 import { ChatExamples, ChatHero } from "./components/chat/ChatHome";
 import ResultTable from "./components/results/ResultTable";
 import ArtifactSheet from "./components/artifacts/ArtifactSheet";
@@ -37,7 +39,6 @@ const AnalyticsPanel = React.lazy(() => import("./components/analytics/Analytics
 // Chat history persistence (server-backed)
 // ---------------------------------------------------------------------------
 
-const MAX_STORED = 50;
 const SYNC_DEBOUNCE_MS = 400;
 const ACTIVE_CHAT_STORAGE_KEY = "rye.active-chat-id";
 
@@ -87,15 +88,24 @@ function navigate(path: string, mode: "push" | "replace" = "push") {
 }
 
 // Mirrors the server: filed chats and dedicated agent chats don't count toward the cap.
+// Newest first. Nothing is dropped for being old: a chat missing from this list is deleted on
+// the server by the sync below, so trimming here would silently destroy history.
 function normalizeChats(chats: ChatRecord[]): ChatRecord[] {
-  let unfiled = 0;
-  return [...chats]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .filter((c) => !!c.folderId || !!c.agentId || ++unfiled <= MAX_STORED);
+  return [...chats].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-function sameChat(a: ChatRecord, b: ChatRecord): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+/** Same details (title, model, folder, prompt…), whatever each side knows about the messages. */
+function sameDetails(a: ChatRecord, b: ChatRecord): boolean {
+  const details = ({ messages: _m, partial: _p, messageCount: _c, ...rest }: ChatRecord) =>
+    // Unset fields and field order don't count as differences.
+    JSON.stringify(Object.entries(rest).filter(([, value]) => value !== undefined).sort(([x], [y]) => x.localeCompare(y)));
+  return details(a) === details(b);
+}
+
+/** A chat from the titles-only list: its messages are still to be fetched unless there are none. */
+function fromSummary(summary: ChatRecord): ChatRecord {
+  if (Array.isArray(summary.messages)) return summary;
+  return { ...summary, messages: [], ...(summary.messageCount ? { partial: true } : {}) };
 }
 
 // A message typed while its chat's run is streaming, bound to the chat it was written in.
@@ -118,7 +128,8 @@ interface ChatRun {
   model: string | undefined;
 }
 
-type Panel = "home" | "chat" | "sops" | "skills" | "memory" | "agents" | "analytics" | "settings";
+// Skills are managed in Settings (its "skills" page), not in a panel of their own.
+type Panel = "home" | "chat" | "sops" | "memory" | "agents" | "analytics" | "settings";
 
 function markLastPaused(msgs: RenderMessage[]): RenderMessage[] {
   return msgs.map((m, i, arr) => (i === arr.length - 1 ? { ...m, paused: true } : m));
@@ -152,6 +163,19 @@ export default function App() {
   const [activeChatId, setActiveChatId] = useState<string | undefined>(
     () => chatIdFromPath(window.location.pathname) ?? readActiveChatId(),
   );
+  // Set when a chat is opened from a search result, so the list scrolls to that message.
+  const [focusMessage, setFocusMessage] = useState<{ chatId: string; index: number; token: number } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  // Cmd/Ctrl+K opens chat search from anywhere, including with the sidebar hidden.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      event.preventDefault();
+      setSearchOpen((open) => !open);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
   const activeChatIdRef = useRef(activeChatId);
   useEffect(() => { activeChatIdRef.current = activeChatId; }, [activeChatId]);
   // Source of truth for runs is the ref (read synchronously by streams); `runs` mirrors it for rendering.
@@ -164,6 +188,8 @@ export default function App() {
   const remoteRunningIdsRef = useRef(remoteRunningIds);
   useEffect(() => { remoteRunningIdsRef.current = remoteRunningIds; }, [remoteRunningIds]);
   const [settingsKey, setSettingsKey] = useState(0);
+  // Held here so anything that wants a Settings page can land on it: setSettingsTab("skills" | "mcp" | …) then setActivePanel("settings").
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   // Unsent composer text per chat id (or NEW_CHAT_DRAFT).
   const [drafts, setDrafts] = useState<Record<string, string>>(readDrafts);
   const draftKey = activeChatId ?? NEW_CHAT_DRAFT;
@@ -208,6 +234,44 @@ export default function App() {
   const loading = Boolean(activeRun?.running) || remoteRunning;
   const isViewingInflight = Boolean(activeRun);
   const displayMessages: RenderMessage[] = activeRun ? activeRun.messages : (activeChat?.messages ?? []);
+  // The list loads titles only; the chat on screen fetches its messages (see the effect below).
+  const activeNeedsLoad = Boolean(activeChat?.partial) && !activeRun;
+  const [chatLoadError, setChatLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  useEffect(() => {
+    const id = activeChatId;
+    if (!id || !activeNeedsLoad) return;
+    let cancelled = false;
+    setChatLoadError(null);
+    void fetch(`/chat/history/${id}`)
+      .then((r) => (r.ok ? (r.json() as Promise<ChatRecord>) : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((full) => {
+        if (cancelled || !Array.isArray(full.messages)) return;
+        const current = chatsRef.current.find((c) => c.id === id);
+        if (!current?.partial) return;
+        // Details edited here while it loaded (a rename) are kept; a copy saved elsewhere since wins outright.
+        const { partial: _partial, messageCount: _count, ...details } = full.updatedAt > current.updatedAt ? full : current;
+        const loaded: ChatRecord = { ...details, messages: full.messages };
+        // Nothing here differs from the server unless this tab had unsaved edits, so don't upload it back.
+        const clean = current === persistedRef.current.get(id) || current === remoteRef.current.get(id);
+        if (clean) remoteRef.current.set(id, loaded);
+        setChats((prev) =>
+          prev.map((c) => {
+            if (c.id !== id || !c.partial) return c;
+            if (c === current) return loaded;
+            // Edited between the lines above and this update: keep that edit, add the messages.
+            const { partial: _p, messageCount: _c, ...edited } = c;
+            return { ...edited, messages: full.messages };
+          }),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setChatLoadError(id);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChatId, activeNeedsLoad, loadAttempt]);
   const displaySessionId = activeRun ? activeRun.sessionId : activeChat?.sessionId;
   const visiblePrompt = activeRun ? activeRun.prompt : (activeChat?.pendingPrompt ?? null);
   const contextPct = activeRun?.contextPct;
@@ -279,7 +343,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/chat/history")
+    void fetch("/chat/history?summary=1")
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<ChatRecord[]>;
@@ -287,7 +351,8 @@ export default function App() {
       .then((loaded) => {
         if (cancelled) return;
         chatsFetchOk.current = true;
-        const normalized = normalizeChats(Array.isArray(loaded) ? loaded : []);
+        // Every chat, titles and details only; a chat's messages are fetched when it is opened.
+        const normalized = normalizeChats((Array.isArray(loaded) ? loaded : []).map(fromSummary));
         // Seed the sync baseline so hydration doesn't re-upload what we just read.
         persistedRef.current = new Map(normalized.map((c) => [c.id, c]));
         remoteRef.current = new Map(normalized.map((c) => [c.id, c]));
@@ -332,7 +397,8 @@ export default function App() {
         void fetch(`/chat/history/${chat.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(chat),
+          // A chat whose messages were never loaded is saved without them, so the server keeps its own.
+          body: JSON.stringify(chatSaveBody(chat)),
         }).catch(() => {
           // Best-effort persistence; keep UI responsive even if backend is down.
         });
@@ -356,11 +422,12 @@ export default function App() {
     if (!chatsFetchOk.current) return;
     let remote: ChatRecord[];
     try {
-      const res = await fetch("/chat/history");
+      const res = await fetch("/chat/history?summary=1");
       if (!res.ok) return;
       const data = (await res.json()) as unknown;
       if (!Array.isArray(data)) return;
-      remote = normalizeChats(data as ChatRecord[]);
+      // Still every chat (absence means deleted), just without messages.
+      remote = normalizeChats((data as ChatRecord[]).map(fromSummary));
     } catch {
       return;
     }
@@ -403,12 +470,25 @@ export default function App() {
             next.push({ ...local, folderId: fresh.folderId, folderSuggestionDismissed: fresh.folderSuggestionDismissed });
             changed = true;
           }
-        } else if (sameChat(local, fresh)) {
+        } else if (fresh.updatedAt > local.updatedAt) {
+          // Saved again elsewhere: take the server's details. Its messages aren't in the titles-only
+          // list, so the chat is marked partial (never saved with messages, never sent into) and is
+          // fetched again if it is on screen; what this tab already has stays visible meanwhile.
+          const adopted = fresh.partial && !local.partial ? { ...fresh, messages: local.messages } : fresh;
+          remoteById.set(local.id, adopted);
+          next.push(adopted);
+          changed = true;
+        } else if (sameDetails(local, fresh)) {
           // Keep the existing object so nothing re-renders or re-uploads.
           remoteById.set(local.id, local);
           next.push(local);
         } else {
-          next.push(fresh);
+          // Same messages (same updatedAt), different details, e.g. filed in a folder elsewhere:
+          // take the details and keep whatever messages this tab has loaded.
+          const merged = { ...fresh, messages: local.messages, partial: local.partial };
+          if (!merged.partial) delete merged.partial;
+          remoteById.set(local.id, merged);
+          next.push(merged);
           changed = true;
         }
       }
@@ -504,6 +584,12 @@ export default function App() {
     setChats((prev) => {
       const idx = prev.findIndex((c) => c.id === id);
       const existing = idx === -1 ? undefined : prev[idx];
+      // Second line of defence behind the send guard: never write a run's messages over a chat
+      // whose own messages were not loaded, since that would erase them on the next save.
+      if (existing?.partial) {
+        console.error(`[chat] refused to overwrite unloaded chat ${id}`);
+        return prev;
+      }
       const run = runsRef.current.get(id);
       const record: ChatRecord = {
         ...existing,
@@ -689,6 +775,9 @@ export default function App() {
     if (!text) return;
     const chatId = continuation?.chatId ?? activeChatId ?? crypto.randomUUID();
     if (deletedChatIdsRef.current.has(chatId)) return;
+    // A chat whose messages haven't loaded can't be sent into: the run would start from an empty
+    // history and saving it would replace the real one. The composer is disabled until it loads.
+    if (chatsRef.current.find((c) => c.id === chatId)?.partial) return;
     // The backend doesn't guard same-session races, and this tab can't see the other run's end state yet.
     if (!continuation && remoteRunningIdsRef.current.has(chatId) && !runsRef.current.get(chatId)?.running) return;
     // One run per chat (the backend doesn't guard same-session races): queue behind it.
@@ -1082,10 +1171,11 @@ export default function App() {
           onNewChat={() => { startNewChat(); setActivePanel("chat"); }}
           onClose={() => setSidebarOpen(false)}
           onSwitch={switchToChat}
+          onOpenSearch={() => setSearchOpen(true)}
+          chatsLoading={!chatsHydrated}
           onDelete={deleteChat}
           onRename={renameChat}
           onOpenSops={() => setActivePanel("sops")}
-          onOpenSkills={() => setActivePanel("skills")}
           onOpenMemory={() => setActivePanel("memory")}
           onOpenAgents={() => setActivePanel("agents")}
           onOpenAnalytics={() => setActivePanel("analytics")}
@@ -1098,15 +1188,15 @@ export default function App() {
           <SkillPanel />
         ) : activePanel === "sops" ? (
           <SopPanel />
-        ) : activePanel === "skills" ? (
-          <SkillPanel />
         ) : activePanel === "memory" ? (
           <MemoryPanel />
         ) : activePanel === "agents" ? (
           <AgentPanel onOpenAgentChat={openAgentChat} />
         ) : activePanel === "settings" ? (
           <SettingsPanel
-            key={settingsKey}
+            tab={settingsTab}
+            onTabChange={setSettingsTab}
+            reloadKey={settingsKey}
             folders={chatFolders.folders}
             chats={chats}
             onCreateFolder={chatFolders.createFolder}
@@ -1130,7 +1220,21 @@ export default function App() {
           }}
           onHandoff={displaySessionId ? () => void sendMessage(HANDOFF_PROMPT) : undefined}
         />
-        {displayMessages.length === 0 ? (
+        {activeNeedsLoad && displayMessages.length === 0 ? (
+          // The composer stays hidden until the messages are here: sending now would start from an empty history.
+          <div className="chat-loading" role="status">
+            {chatLoadError === activeChatId ? (
+              <>
+                <span>Couldn't load this conversation.</span>
+                <button type="button" className="btn btn--sm btn--ghost" onClick={() => setLoadAttempt((n) => n + 1)}>
+                  Try again
+                </button>
+              </>
+            ) : (
+              <span>Loading conversation…</span>
+            )}
+          </div>
+        ) : displayMessages.length === 0 ? (
           <div className="chat-home">
             <div className="chat-home-inner">
               <ChatHero />
@@ -1158,6 +1262,7 @@ export default function App() {
         <MessageList
           messages={displayMessages}
           chatId={activeChatId}
+          focusMessage={focusMessage && focusMessage.chatId === activeChatId ? focusMessage : undefined}
           sessionId={displaySessionId ?? ""}
           loading={loading}
           isViewingInflight={isViewingInflight || remoteRunning}
@@ -1204,6 +1309,22 @@ export default function App() {
           </>
         )}
       </div>
+      {searchOpen && (
+        <ChatSearchModal
+          chats={chats}
+          chatsLoading={!chatsHydrated}
+          agentName={(id) => agentById.get(id)?.name}
+          onClose={() => setSearchOpen(false)}
+          onOpenAgent={openAgentChat}
+          onOpen={(chatId, messageIndex) => {
+            const chat = chatsRef.current.find((c) => c.id === chatId);
+            if (!chat) return;
+            switchToChat(chat);
+            // The token makes opening the same result twice scroll to it again.
+            setFocusMessage(messageIndex === undefined ? null : { chatId, index: messageIndex, token: Date.now() });
+          }}
+        />
+      )}
       {viewingArtifact && activePanel === "chat" && viewingArtifact.sessionId === displaySessionId && (
         <ArtifactSheet
           key={`${viewingArtifact.id}:${viewingArtifact.version}`}

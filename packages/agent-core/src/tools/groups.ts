@@ -10,6 +10,9 @@ import { getCustomToolDefs } from "./custom.js";
 import { parseToolName } from "../mcp/client.js";
 
 export const CORE_GROUP = "core";
+export const SQL_GROUP = "sql";
+/** Former group ids → current ones. The SQL group was "mysql" when MySQL was the only engine. */
+export const GROUP_ALIASES: Record<string, string> = { mysql: SQL_GROUP };
 export const LOAD_TOOLS_TOOL_NAME = "load_tools_tool";
 const MCP_GROUP_PREFIX = "mcp:";
 
@@ -41,7 +44,7 @@ const STATIC_GROUPS: Array<{ id: string; description: string; tools: string[] }>
       "spawn_subagents_tool",
     ],
   },
-  { id: "mysql", description: "MySQL queries, schema, databases", tools: ["mysql_query_tool", "mysql_schema_tool", "mysql_list_databases_tool"] },
+  { id: SQL_GROUP, description: "SQL databases (MySQL, PostgreSQL): queries, schema, connections", tools: ["sql_query_tool", "sql_schema_tool", "sql_list_databases_tool"] },
   {
     id: "aws",
     description: "CloudWatch logs, RDS, ECS, EC2, ALB, S3",
@@ -69,6 +72,7 @@ const STATIC_GROUPS: Array<{ id: string; description: string; tools: string[] }>
     tools: ["list_repos_tool", "code_search_tool", "symbol_search_tool", "stack_trace_tool", "file_search_tool", "log_to_source_tool"],
   },
   { id: "results", description: "query/aggregate stored results (res_…)", tools: ["result_query_tool", "result_aggregate_tool"] },
+  { id: "chats", description: "search and read the user's earlier conversations with Rye", tools: ["search_chats_tool", "read_chat_tool"] },
   { id: "sop_authoring", description: "save or update SOPs", tools: ["save_sop_tool"] },
   { id: "skills", description: "create or update Rye-owned Skills", tools: ["save_skill_tool"] },
   { id: "agents", description: "create or update custom Agents", tools: ["save_agent_tool"] },
@@ -171,7 +175,8 @@ export function resolveGroupNames(groups: ToolGroup[], requested: string[]): { e
   const enabled = new Set<string>();
   const unknown: string[] = [];
   for (const raw of requested) {
-    const name = String(raw).trim();
+    // Names saved before a rename (agents store their groups) still mean the same group.
+    const name = GROUP_ALIASES[String(raw).trim().toLowerCase()] ?? String(raw).trim();
     const lower = name.toLowerCase();
     const id = ids.has(lower)
       ? lower
@@ -244,13 +249,20 @@ export interface ToolGroupSelectionInput {
 export type ToolGroupSelector = (input: ToolGroupSelectionInput) => Promise<string[]>;
 
 const KEYWORD_RULES: Record<string, RegExp[]> = {
-  mysql: [/\b(sql|mysql|query|queries|tables?|databases?|db|schemas?|select|columns?|rows?)\b/i],
+  [SQL_GROUP]: [/\b(sql|mysql|postgres|postgresql|psql|pg|query|queries|tables?|databases?|db|schemas?|select|columns?|rows?)\b/i],
   aws: [/\b(aws|cloudwatch|logs?|log groups?|ecs|rds|ec2|alb|elb|load balancers?|target groups?|target health|clusters?|containers?|fargate|instances?)\b/i],
   jira: [/\b(jira|tickets?)\b/i, /\b[A-Z][A-Z0-9]+-\d+\b/],
   git: [/\b(git|commits?|branch(es)?|blame|repos?|repository|diff)\b/i],
   code_search: [
     /\b(code|codebase|source|repos?|repository|functions?|class|methods?|symbols?|stack ?traces?|traceback|exceptions?|log lines?)\b/i,
     /\bat [\w$.<>]+\([\w$.]+:\d+\)|\.(java|kt|py|ts|tsx|js|go|rb|php|cs|scala):\d+/,
+  ],
+  // References to something said or done before this chat.
+  chats: [
+    /\b(earlier|previous|prior|past|old|other|another|last)\s+(chats?|conversations?|threads?|sessions?|discussions?)\b/i,
+    /\b(last time|the other day|a while (ago|back))\b/i,
+    /\b(we|you|i)\s+(already\s+|previously\s+)?(discussed|talked about|spoke about|went over|looked (at|into)|decided|figured out|investigated)\b/i,
+    /\b(chat|conversation) (history|search)\b|\bsearch (my|our|the) (chats?|conversations?|history)\b|\bremember when\b/i,
   ],
   sop_authoring: [/\b(sops?|runbooks?|playbooks?|procedures?)\b/i],
   skills: [/\bskills?\b/i],

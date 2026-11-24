@@ -141,7 +141,18 @@
 }
 .settings-decision-status.is-ok::before { background: var(--main-success); }
 .settings-decision-status.is-missing::before { background: var(--main-warning); }
-.settings-decision-status code { font-size: 11px; }
+.settings-decision-status code { font-size: 12px; }
+.settings-decision-status > svg { vertical-align: -2px; margin-right: 2px; }
+/* Search page: the rerank server's fields, and the text of the change-model confirmation. */
+.settings-retrieval-server { align-items: flex-end; }
+/* About the height of the two rows that replace it, so the Reranker section below doesn't jump far. */
+.settings-retrieval-loading { min-height: 132px; padding: 14px 16px; }
+.settings-retrieval-loading .settings-placeholder { margin: 0; }
+.settings-retrieval-server .form-input { max-width: 420px; }
+.settings-retrieval-server .form-label { margin-top: 10px; }
+.settings-retrieval-server .settings-decision-status { margin-top: 6px; }
+.settings-confirm { display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; line-height: 1.55; color: var(--main-fg); }
+.settings-confirm p { margin: 0; }
 
 .settings-foot {
   display: flex;
@@ -200,6 +211,8 @@
   box-shadow: var(--shadow-xs);
   transition: transform 0.15s;
 }
+/* Dark: the border colour is too close to the page for an off track, so it takes a step toward the faint text tier. */
+:root[data-theme="dark"] .settings-switch:not(:checked) { background: color-mix(in srgb, var(--main-fg-faint) 60%, var(--main-border)); }
 .settings-switch:checked { background: var(--main-accent); }
 .settings-switch:checked::after { transform: translateX(14px); }
 .settings-switch:focus-visible { outline: none; box-shadow: var(--focus-ring); }
@@ -239,6 +252,241 @@ label.settings-task-text { cursor: pointer; }
   white-space: nowrap;
 }
 
+/* Tabs, in the panel header beside the title */
+.settings-panel { position: relative; }
+
+/* Settings is a list of pages on the left and the chosen page on the right, each scrolling on its own. */
+.settings-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.settings-nav {
+  flex-shrink: 0;
+  width: 208px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 10px;
+  border-right: 1px solid var(--main-border);
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--main-fg-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-nav-item svg { flex-shrink: 0; color: var(--main-fg-faint); }
+.settings-nav-item:hover { background: var(--main-surface); color: var(--main-fg); }
+.settings-nav-item.active {
+  background: var(--main-surface-alt);
+  color: var(--main-fg);
+  font-weight: 600;
+}
+.settings-nav-item.active svg { color: var(--main-fg); }
+.settings-nav-item:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -2px; }
+.settings-nav-name { flex: 1; min-width: 0; }
+.settings-nav-soon {
+  flex-shrink: 0;
+  color: var(--main-fg-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+/* The page starts at the left, beside the list, not centred in the leftover width. */
+/* The scrollbar's width is kept free on every page, so a page long enough to scroll is no narrower than a short one. */
+.settings-page { min-width: 0; padding: 24px 32px; scrollbar-gutter: stable; }
+.settings-page > .settings-body { margin: 0; }
+.settings-page > .settings-error { margin-left: 0; margin-right: 0; }
+/* Stands in for the tier cards while Models loads, at about their height. */
+.settings-loading { min-height: 138px; display: flex; align-items: center; justify-content: center; }
+
+/* Narrow windows: the list becomes a row of pills above the page. */
+@media (max-width: 760px) {
+  .settings-layout { flex-direction: column; }
+  .settings-nav {
+    width: auto;
+    flex-direction: row;
+    gap: 4px;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--main-border);
+    overflow-x: auto;
+  }
+  .settings-nav-item { flex-shrink: 0; white-space: nowrap; }
+  .settings-page { padding: 18px 16px; }
+}
+
+/* A section whose heading shares a row with its actions. */
+.settings-section-bar { display: flex; align-items: flex-end; gap: 16px; }
+.settings-section-bar > .settings-section-head { flex: 1; min-width: 0; }
+.settings-section-bar > .sop-panel-toolbar { flex-shrink: 0; }
+.settings-section-desc code,
+.settings-task-desc code,
+.settings-placeholder code { font-size: 12px; }
+
+/* MCP servers */
+.settings-mcp-list { margin: 0; padding: 0; list-style: none; }
+.settings-mcp-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.settings-mcp-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--main-fg-faint);
+}
+.settings-mcp-dot.is-ok { background: var(--main-success); }
+.settings-mcp-dot.is-warn { background: var(--main-warning); }
+.settings-mcp-dot.is-error { background: var(--color-danger); }
+.settings-mcp-name .settings-source { margin-left: 0; font-size: 12px; }
+/* A failed connection can report a whole error page; the row shows two lines and the details the rest. */
+.settings-mcp-detail {
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.settings-mcp-error {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-sm);
+  background: var(--main-surface);
+  color: var(--main-fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.settings-mcp-dot.is-off { background: var(--main-fg-faint); }
+/* Elsewhere this menu appears on hover of a card; in a settings row it is always there to find. */
+.settings-mcp-item .sop-menu-btn { opacity: 1; }
+.settings-mcp-item + .settings-mcp-item { border-top: 1px solid var(--main-border); }
+.settings-mcp-item.is-off .settings-mcp-name { color: var(--main-fg-muted); }
+/* The name and status are one button that opens the server's details. */
+.settings-mcp-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-mcp-toggle > svg {
+  flex-shrink: 0;
+  margin-top: 4px;
+  color: var(--main-fg-faint);
+  transition: transform 0.12s;
+}
+.settings-mcp-toggle > svg.is-open { transform: rotate(90deg); }
+.settings-mcp-toggle:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 3px; border-radius: var(--radius-xs); }
+.settings-mcp-more {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px 14px 37px;
+}
+.settings-mcp-def code { font-size: 12px; overflow-wrap: anywhere; }
+.settings-mcp-problems,
+.settings-mcp-tools { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.settings-mcp-problems { color: var(--color-danger); font-size: 12.5px; }
+.settings-mcp-tools li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 12.5px; }
+.settings-mcp-tools code { font-size: 12px; }
+.settings-mcp-tools .settings-source { margin-left: 0; font-size: 12px; }
+.settings-mcp-tool-desc {
+  flex-basis: 100%;
+  color: var(--main-fg-muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+/* Add / edit form */
+.settings-mcp-modal { width: 560px; }
+.settings-mcp-choice { align-self: flex-start; }
+.settings-mcp-lines { resize: vertical; min-height: 64px; font-family: 'Fira Code', 'Menlo', monospace; font-size: 12px; line-height: 1.5; }
+.settings-mcp-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--main-fg); }
+.settings-mcp-check input { margin-top: 3px; }
+.settings-mcp-hint { margin: 14px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--main-fg-muted); }
+.settings-mcp-hint code { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .settings-mcp-toggle > svg { transition: none; }
+}
+.settings-mcp-meta { flex-shrink: 0; font-size: 12.5px; color: var(--main-fg-muted); white-space: nowrap; }
+a.settings-reset { text-decoration: none; }
+
+/* Accent colour: a radio group of labelled swatches. Each dot shows its own preset, whatever accent is in use. */
+.settings-accents { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 330px; }
+.settings-accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-pill);
+  background: var(--main-bg);
+  color: var(--main-fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.settings-accent:hover { background: var(--main-surface); color: var(--main-fg); }
+.settings-accent[aria-checked="true"] { border-color: var(--main-fg-muted); background: var(--main-surface-alt); color: var(--main-fg); }
+.settings-accent:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; }
+.settings-accent-dot { flex-shrink: 0; width: 12px; height: 12px; border-radius: 50%; }
+.settings-accent-dot--blue { background: var(--accent-blue); }
+.settings-accent-dot--graphite { background: var(--accent-graphite); }
+.settings-accent-dot--green { background: var(--accent-green); }
+.settings-accent-dot--teal { background: var(--accent-teal); }
+.settings-accent-dot--purple { background: var(--accent-purple); }
+.settings-accent-dot--pink { background: var(--accent-pink); }
+.settings-accent-dot--orange { background: var(--accent-orange); }
+@media (max-width: 780px) {
+  .settings-accents { justify-content: flex-start; max-width: none; }
+}
+
+/* A section with nothing to manage yet. */
+.settings-source.settings-soon { margin-left: 6px; font-size: 12px; vertical-align: 1px; }
+.settings-placeholder {
+  margin: 0;
+  padding: 18px 16px;
+  border: 1px dashed color-mix(in srgb, var(--main-fg-faint) 45%, var(--main-border));
+  border-radius: var(--radius-xl);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--main-fg-muted);
+}
+
+/* Skills, embedded: the list sits in the page, and an opened skill covers the whole panel. */
+.settings-skills .skill-notice { margin: 0; }
+.settings-skills .sop-panel-zero { padding: 32px 20px; }
+.settings-skills.is-covered { visibility: hidden; }
+.sop-panel.settings-skill-detail {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--main-bg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .settings-switch, .settings-switch::after { transition: none; }
 }
@@ -248,4 +496,6 @@ label.settings-task-text { cursor: pointer; }
   .settings-task { flex-direction: column; align-items: stretch; }
   .settings-task-control { align-items: flex-start; }
   .settings-decision-control .settings-select { width: 100%; }
+  .settings-section-bar { flex-direction: column; align-items: stretch; }
+  .settings-section-bar > .sop-panel-toolbar { margin-left: 0; flex-wrap: wrap; }
 }

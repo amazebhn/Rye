@@ -177,6 +177,20 @@ export class SOPStore {
     return result.changes > 0;
   }
 
+  /** Embed every SOP again with the current model (after the embedding model changes). Returns how many were done. */
+  async reembedAll(): Promise<number> {
+    const rows = this.db.prepare("SELECT rowid as id, title, description, content FROM sops").all() as Array<{ id: number; title: string; description: string; content: string }>;
+    let done = 0;
+    for (const row of rows) {
+      const embedding = await embed(`${row.title} ${row.description} ${row.content}`);
+      // The embedder went away: leave the rest as they are rather than blanking them.
+      if (!embedding) break;
+      this.db.prepare("UPDATE sops SET embedding = ? WHERE rowid = ?").run(float32ToBlob(embedding), row.id);
+      done++;
+    }
+    return done;
+  }
+
   async search(query: string, limit = 5): Promise<SOP[]> {
     const queryEmbedding = await embed(query);
     const rows = this.db

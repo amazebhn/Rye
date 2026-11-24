@@ -92,6 +92,11 @@
   color: var(--color-fg);
 }
 
+/* Recharts draws its hover cursor in #ccc and separates pie slices in white; on dark both need the page's own greys. */
+:root[data-theme="dark"] .analytics-section .recharts-tooltip-cursor { stroke: var(--main-fg-faint); }
+:root[data-theme="dark"] .analytics-section .recharts-rectangle.recharts-tooltip-cursor { fill: var(--main-surface-alt); stroke: none; }
+:root[data-theme="dark"] .analytics-section .recharts-pie-sector .recharts-sector { stroke: var(--main-bg); }
+
 .analytics-section-sub {
   margin: 0 0 6px;
   font-size: 11px;

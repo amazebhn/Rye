@@ -152,10 +152,15 @@ function SkillMenu({ skill, onRename, onDelete, onDuplicate }: SkillMenuProps) {
 }
 
 // ── Main panel ────────────────────────────────────────────────────────────
-export default function SkillPanel() {
+/**
+ * `embedded` draws the list as a section of another page (the Settings tab) instead of a panel of its own;
+ * an opened skill then covers that page's panel.
+ */
+export default function SkillPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const { skills, skillsLoading, refreshSkills, getSkill, deleteSkill, renameSkill, duplicateSkill } = useSkills();
   const [query, setQuery] = useState("");
-  const [viewMode, setViewMode] = useState<ViewMode>("card");
+  // A list by default: skills are scanned by name, and the list fits far more of them on a page than cards do.
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [activeSkill, setActiveSkill] = useState<Skill | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [sortField, setSortField] = useState<SortField>("title");
@@ -394,12 +399,11 @@ export default function SkillPanel() {
   );
 
   // ── Detail view ───────────────────────────────────────────────────────
-  if (activeSkill) {
-    const s = activeSkill;
+  const renderDetail = (s: Skill) => {
     const files = s.files.filter((f) => f.path !== "SKILL.md");
     const from = s.installedFrom;
     return (
-      <div className="sop-panel">
+      <div className={`sop-panel${embedded ? " settings-skill-detail" : ""}`}>
         {deleteModal}
         <div className="sop-panel-header sop-panel-header--detail">
           <button
@@ -529,11 +533,12 @@ export default function SkillPanel() {
         </div>
       </div>
     );
-  }
+  };
+  if (activeSkill && !embedded) return renderDetail(activeSkill);
 
   // ── List / Card view ──────────────────────────────────────────────────
-  return (
-    <div className="sop-panel">
+  const modals = (
+    <>
       {creating && (
         <NewSkillModal
           onCreated={handleCreated}
@@ -550,9 +555,12 @@ export default function SkillPanel() {
           animateIn={!handoff}
         />
       )}
-      {deleteModal}
-      <div className="sop-panel-header">
-        <h2 className="sop-panel-title">Skills</h2>
+      {/* With a skill open, its detail view draws this modal instead. */}
+      {!activeSkill && deleteModal}
+    </>
+  );
+
+  const toolbar = (
         <div className="sop-panel-toolbar">
           <div className="sop-search-wrap">
             <Search size={13} className="sop-search-icon" />
@@ -608,10 +616,10 @@ export default function SkillPanel() {
             New Skill
           </button>
         </div>
-      </div>
-      {noticeBar}
+  );
 
-      <div className="sop-panel-body">
+  const results = (
+      <>
         {skillsLoading && <div className="sop-panel-empty">Loading…</div>}
 
         {!skillsLoading && (skills?.length ?? 0) === 0 && (
@@ -697,6 +705,46 @@ export default function SkillPanel() {
             </table>
           )
         )}
+      </>
+  );
+
+  if (embedded) {
+    return (
+      <>
+        <section
+          className={`settings-section settings-skills${activeSkill ? " is-covered" : ""}`}
+          aria-labelledby="settings-skills-title"
+          aria-hidden={activeSkill ? true : undefined}
+        >
+          {modals}
+          <div className="settings-section-bar">
+            <div className="settings-section-head">
+              <h3 className="settings-section-title" id="settings-skills-title">Skills</h3>
+              <p className="settings-section-desc">
+                Reusable instructions and scripts the agent loads when a task calls for them.
+              </p>
+            </div>
+            {toolbar}
+          </div>
+          {!activeSkill && noticeBar}
+          {results}
+        </section>
+        {activeSkill && renderDetail(activeSkill)}
+      </>
+    );
+  }
+
+  return (
+    <div className="sop-panel">
+      {modals}
+      <div className="sop-panel-header">
+        <h2 className="sop-panel-title">Skills</h2>
+        {toolbar}
+      </div>
+      {noticeBar}
+
+      <div className="sop-panel-body">
+        {results}
       </div>
     </div>
   );

@@ -84,6 +84,23 @@ export interface ChatRecord {
   folderId?: string; // server-owned; changed only via /chat/folders/*
   folderSuggestionDismissed?: boolean;
   agentId?: string; // dedicated 1:1 chat for a custom agent
+  /**
+   * The chat's messages have not been fetched yet: `messages` is empty only because it is unknown.
+   * A partial chat must never be saved with its `messages` (that would erase them on the server)
+   * and must never be sent into; see chatSaveBody and the guards in App.tsx.
+   */
+  partial?: boolean;
+  /** How many messages the server holds, from the titles-only list. */
+  messageCount?: number;
+}
+
+/**
+ * What to PUT for a chat. A partial chat is saved without a `messages` key, which the server
+ * reads as "update the details, keep the messages you have".
+ */
+export function chatSaveBody(chat: ChatRecord): Omit<ChatRecord, "partial" | "messageCount" | "messages"> & { messages?: RenderMessage[] } {
+  const { partial, messageCount: _count, messages, ...details } = chat;
+  return partial ? details : { ...details, messages };
 }
 
 export interface AgentAvatar {

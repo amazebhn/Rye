@@ -40,6 +40,10 @@ import {
 
 // Distance from the bottom that still counts as "at the latest message".
 const NEAR_BOTTOM_PX = 80;
+/** Messages drawn when a chat opens, and added each time the reader reaches the top. */
+const WINDOW_MESSAGES = 60;
+/** How close to the top (px) the reader gets before earlier messages are added. */
+const NEAR_TOP_PX = 600;
 
 function TypingIndicator() {
   return (
@@ -574,6 +578,8 @@ function WideTable({
 interface Props {
   messages: RenderMessage[];
   chatId?: string;
+  /** A message to scroll to and briefly highlight (a search result); `token` changes on every request. */
+  focusMessage?: { index: number; token: number };
   sessionId: string;
   loading: boolean;
   isViewingInflight: boolean;
@@ -610,6 +616,7 @@ interface MessageProps {
 export default function MessageList({
   messages,
   chatId,
+  focusMessage,
   sessionId,
   loading,
   isViewingInflight,
@@ -632,6 +639,55 @@ export default function MessageList({
   const [hasNew, setHasNew] = useState(false);
   // Guards the gap between click and `loading` turning true.
   const [continuing, setContinuing] = useState(false);
+
+  // A long chat draws only its latest messages; earlier ones are added as the reader scrolls up.
+  // The window is anchored at its first message, so messages arriving at the end never push the top out.
+  // `to` is null while the window runs to the end of the chat (the usual case); it is a message index only
+  // after a jump to an old message (from search), when the messages after the window aren't drawn either.
+  const [shownFrom, setShownFrom] = useState<{ chatId?: string; from: number; to: number | null; sized: boolean }>({ chatId, from: 0, to: null, sized: false });
+  // Re-anchor for another chat, once an opened chat's messages arrive, or after a rewind past the anchor.
+  const reanchor = shownFrom.chatId !== chatId || (!shownFrom.sized && messages.length > 0) || shownFrom.from > messages.length;
+  const from = reanchor ? Math.max(0, messages.length - WINDOW_MESSAGES) : shownFrom.from;
+  const to = reanchor || shownFrom.to === null || shownFrom.to >= messages.length ? null : shownFrom.to;
+  useLayoutEffect(() => {
+    if (reanchor) setShownFrom({ chatId, from, to: null, sized: messages.length > 0 });
+  }, [reanchor, chatId, from, messages.length]);
+  const fromRef = useRef(from);
+  fromRef.current = from;
+  const toRef = useRef(to);
+  toRef.current = to;
+  const messageCountRef = useRef(messages.length);
+  messageCountRef.current = messages.length;
+  // Distance from the bottom when earlier messages were asked for, so the view can be put back exactly.
+  const earlierAnchorRef = useRef<number | null>(null);
+  const showEarlier = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || fromRef.current === 0 || earlierAnchorRef.current !== null) return;
+    earlierAnchorRef.current = el.scrollHeight - el.scrollTop;
+    setShownFrom({ chatId, from: Math.max(0, fromRef.current - WINDOW_MESSAGES), to: toRef.current, sized: true });
+  }, [chatId]);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || earlierAnchorRef.current === null) return;
+    // Messages were added above: keep what the reader was looking at where it was.
+    el.scrollTop = el.scrollHeight - earlierAnchorRef.current;
+    lastScrollTopRef.current = el.scrollTop;
+    earlierAnchorRef.current = null;
+  }, [from]);
+  // Messages added below need no correction: what is on screen doesn't move.
+  const showLater = useCallback(() => {
+    if (toRef.current === null) return;
+    const next = toRef.current + WINDOW_MESSAGES;
+    setShownFrom({ chatId, from: fromRef.current, to: next >= messageCountRef.current ? null : next, sized: true });
+  }, [chatId]);
+  // Back to the end of the chat, drawn as it is when a chat opens.
+  const pinAfterRenderRef = useRef(false);
+  const showLatest = useCallback(() => {
+    if (toRef.current === null) return false;
+    pinAfterRenderRef.current = true;
+    setShownFrom({ chatId, from: Math.max(0, messageCountRef.current - WINDOW_MESSAGES), to: null, sized: true });
+    return true;
+  }, [chatId]);
 
   const showJump = useCallback((visible: boolean) => {
     if (jumpVisibleRef.current === visible) return;
@@ -666,8 +722,13 @@ export default function MessageList({
       else if (top < lastScrollTopRef.current) followRef.current = false;
       else if (distance <= NEAR_BOTTOM_PX) followRef.current = true;
       lastScrollTopRef.current = top;
+      // Mid-chat after a jump: the bottom of what is drawn is not the end of the chat, so never pin to it.
+      const midChat = toRef.current !== null;
+      if (midChat) followRef.current = false;
       if (followRef.current) markNew(false);
-      showJump(distance > NEAR_BOTTOM_PX);
+      showJump(midChat || distance > NEAR_BOTTOM_PX);
+      if (top < NEAR_TOP_PX) showEarlier();
+      if (midChat && distance < NEAR_TOP_PX) showLater();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     // Expanding a trace or tool call is reading in place: stop following so it grows downward instead of pinning to the bottom.
@@ -680,7 +741,7 @@ export default function MessageList({
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("click", onToggle, true);
     };
-  }, [markNew, showJump]);
+  }, [markNew, showJump, showEarlier, showLater]);
 
   // Content (late markdown, tables, fetched results) and viewport (composer growth) resizes.
   useEffect(() => {
@@ -707,6 +768,60 @@ export default function MessageList({
     pinToBottom();
   }, [chatId, pinToBottom]);
 
+  // Arriving from search: show the matching message instead of the end of the chat, and flash it.
+  const focusIndex = focusMessage?.index;
+  const focusToken = focusMessage?.token;
+  const hasMessages = messages.length > 0;
+  const handledFocusRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || focusIndex === undefined) return;
+    // One jump per request: once the message has been shown, later changes to what is drawn
+    // (the reader scrolling on, or going back to the latest) must not pull the view back to it.
+    if (handledFocusRef.current === focusToken) return;
+    // The message may be outside what a long chat has drawn: draw the messages around it, then come back here.
+    if (focusIndex < from || (to !== null && focusIndex >= to)) {
+      const end = focusIndex + WINDOW_MESSAGES;
+      setShownFrom({ chatId, from: Math.max(0, focusIndex - 6), to: end >= messages.length ? null : end, sized: true });
+      return;
+    }
+    const find = () =>
+      Array.from(el.querySelectorAll<HTMLElement>("[data-message-start]")).find(
+        (row) => Number(row.dataset.messageStart) <= focusIndex && focusIndex <= Number(row.dataset.messageEnd),
+      );
+    const show = () => {
+      const row = find();
+      if (!row) return undefined;
+      // Stop following the bottom, or the next layout change would pull the view back down.
+      followRef.current = false;
+      row.scrollIntoView({ block: "center" });
+      lastScrollTopRef.current = el.scrollTop;
+      return row;
+    };
+    // Only what was said is highlighted: the bubble for a user message, the reply body otherwise, not the name beside it.
+    const row = show();
+    if (row) handledFocusRef.current = focusToken;
+    // A reply can hold several segments (reply, answer to a prompt, reply…); assistant text is every other one.
+    const segment = row ? Math.floor((focusIndex - Number(row.dataset.messageStart)) / 2) : 0;
+    const body =
+      row?.querySelector<HTMLElement>(".user-bubble") ??
+      row?.querySelectorAll<HTMLElement>(".message-body > .md-body")[segment] ??
+      row?.querySelector<HTMLElement>(".message-body") ??
+      null;
+    body?.classList.add("message-found");
+    // Tables and charts above it finish laying out a moment later and would push it off centre.
+    const settle = window.setTimeout(show, 300);
+    const fade = window.setTimeout(() => body?.classList.remove("message-found"), 2600);
+    return () => {
+      window.clearTimeout(settle);
+      window.clearTimeout(fade);
+      body?.classList.remove("message-found");
+    };
+    // `hasMessages`: an opened chat's messages arrive a moment after it is shown, so look again then.
+    // `from`/`to`: and once more after the messages around it were drawn. `messages.length` is read only then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, focusIndex, focusToken, hasMessages, from, to]);
+
   let lastUser: RenderMessage | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
@@ -720,8 +835,14 @@ export default function MessageList({
   useLayoutEffect(() => {
     if (lastUserKeyRef.current === lastUserKey) return;
     lastUserKeyRef.current = lastUserKey;
-    if (lastUserKey !== undefined) pinToBottom();
-  }, [lastUserKey, pinToBottom]);
+    // From mid-chat, the end has to be drawn first; the pin follows that render.
+    if (lastUserKey !== undefined && !showLatest()) pinToBottom();
+  }, [lastUserKey, pinToBottom, showLatest]);
+  useLayoutEffect(() => {
+    if (!pinAfterRenderRef.current || to !== null) return;
+    pinAfterRenderRef.current = false;
+    pinToBottom();
+  }, [from, to, pinToBottom]);
 
   useLayoutEffect(() => {
     if (!followRef.current) markNew(true);
@@ -730,6 +851,11 @@ export default function MessageList({
   function jumpToLatest(e: React.MouseEvent<HTMLButtonElement>) {
     const el = scrollRef.current;
     if (!el) return;
+    // Mid-chat after a jump: the end isn't drawn, so draw it and land there (no smooth scroll across the gap).
+    if (showLatest()) {
+      if (e.detail === 0) document.querySelector<HTMLTextAreaElement>(".chat-input")?.focus({ preventScroll: true });
+      return;
+    }
     followRef.current = true;
     markNew(false);
     const reduceMotion = window.matchMedia(
@@ -806,7 +932,13 @@ export default function MessageList({
     <div className="message-list-shell">
       <div ref={scrollRef} className="message-list">
         <div ref={contentRef} className="message-list-content">
-          {items.map(({ start, end }) =>
+          {from > 0 && (
+            // Scrolling near the top does this by itself; the button is for keyboards and short windows.
+            <button type="button" className="message-list-earlier" onClick={showEarlier}>
+              Show earlier messages
+            </button>
+          )}
+          {items.filter(({ start, end }) => end >= from && (to === null || start < to)).map(({ start, end }) =>
             isInline(messages[start]) ? (
               <PromptAnswer key={start} msg={messages[start]} rounds={start > 0 ? pauseInfo(messages[start - 1]).rounds : undefined} />
             ) : (
@@ -832,6 +964,11 @@ export default function MessageList({
                 {...msgProps}
               />
             ),
+          )}
+          {to !== null && (
+            <button type="button" className="message-list-earlier" onClick={showLater}>
+              Show later messages
+            </button>
           )}
         </div>
       </div>
@@ -1040,7 +1177,7 @@ export function Message({
   const meta = mergeMeta(segments);
 
   return (
-    <div className={`message-row${isUserMessage ? " user" : ""}`}>
+    <div className={`message-row${isUserMessage ? " user" : ""}`} data-message-start={index} data-message-end={index + msgs.length - 1}>
       <span
         className={`message-role${isUserMessage ? " user" : " assistant"}`}
         aria-label={respondingAgent ? respondingAgent.name : undefined}

@@ -1,32 +1,65 @@
 import React, { useEffect, useId, useState } from "react";
 import { Code2, Workflow } from "lucide-react";
+import { useResolvedTheme, type ResolvedTheme } from "../../utils/theme";
 
 type Mermaid = (typeof import("mermaid"))["default"];
 
 // Mermaid is large, so it is only fetched the first time a reply contains a diagram.
 let loading: Promise<Mermaid> | null = null;
-function loadMermaid(): Promise<Mermaid> {
-  loading ??= import("mermaid").then(({ default: mermaid }) => {
+let configuredFor: ResolvedTheme | null = null;
+
+/** Mermaid, configured for the theme on screen. Its colours are baked into the SVG, so a theme change means a redraw. */
+function loadMermaid(theme: ResolvedTheme): Promise<Mermaid> {
+  loading ??= import("mermaid").then(({ default: mermaid }) => mermaid);
+  return loading.then((mermaid) => {
+    if (configuredFor === theme) return mermaid;
+    const styles = getComputedStyle(document.documentElement);
+    const token = (name: string) => styles.getPropertyValue(name).trim();
     mermaid.initialize({
       startOnLoad: false,
       // "strict" sanitizes labels and disables click handlers: the diagram source comes from a model.
       securityLevel: "strict",
-      theme: "neutral",
       // The app's sans font, by name: Mermaid measures labels off-page, where "inherit" resolves to the browser default.
-      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--font-ui").trim() || "sans-serif",
+      fontFamily: token("--font-ui") || "sans-serif",
+      ...(theme === "dark"
+        ? {
+            // Mermaid's own dark theme is blue-grey; "base" lets the diagram take the app's dark palette instead.
+            theme: "base" as const,
+            themeVariables: {
+              darkMode: true,
+              background: token("--main-bg"),
+              primaryColor: token("--main-surface-alt"),
+              primaryTextColor: token("--main-fg"),
+              primaryBorderColor: token("--main-fg-faint"),
+              secondaryColor: token("--main-surface"),
+              secondaryTextColor: token("--main-fg"),
+              secondaryBorderColor: token("--main-border"),
+              tertiaryColor: token("--main-surface"),
+              tertiaryTextColor: token("--main-fg"),
+              tertiaryBorderColor: token("--main-border"),
+              lineColor: token("--main-fg-muted"),
+              textColor: token("--main-fg"),
+              edgeLabelBackground: token("--main-bg"),
+              noteBkgColor: token("--main-surface"),
+              noteTextColor: token("--main-fg"),
+              noteBorderColor: token("--main-border"),
+            },
+          }
+        : { theme: "neutral" as const }),
     });
+    configuredFor = theme;
     return mermaid;
   });
-  return loading;
 }
 
-type Drawn = { source: string; svg: string } | { source: string; error: string };
+type Drawn = { source: string; theme: ResolvedTheme } & ({ svg: string } | { error: string });
 
 /** A diagram the agent writes as a fenced ```mermaid block (flowchart, sequence, ER, state, gantt…). */
 export default function DiagramBlock({ source }: { source: string }) {
   const id = `diagram-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const [drawn, setDrawn] = useState<Drawn | null>(null);
   const [view, setView] = useState<"diagram" | "source">("diagram");
+  const theme = useResolvedTheme();
 
   useEffect(() => {
     let cancelled = false;
@@ -34,14 +67,14 @@ export default function DiagramBlock({ source }: { source: string }) {
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
-          const mermaid = await loadMermaid();
+          const mermaid = await loadMermaid(theme);
           // Checked first because render() leaves an error graphic in the page when the source is invalid.
           const valid = await mermaid.parse(source, { suppressErrors: true });
           if (!valid) throw new Error("The diagram source isn't valid Mermaid.");
           const { svg } = await mermaid.render(id, source);
-          if (!cancelled) setDrawn({ source, svg });
+          if (!cancelled) setDrawn({ source, theme, svg });
         } catch (err) {
-          if (!cancelled) setDrawn({ source, error: err instanceof Error ? err.message : String(err) });
+          if (!cancelled) setDrawn({ source, theme, error: err instanceof Error ? err.message : String(err) });
         }
       })();
     }, 250);
@@ -49,9 +82,9 @@ export default function DiagramBlock({ source }: { source: string }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [id, source]);
+  }, [id, source, theme]);
 
-  const current = drawn?.source === source ? drawn : null;
+  const current = drawn?.source === source && drawn.theme === theme ? drawn : null;
   // Keep the last good drawing on screen while newer source is being checked.
   const svg = drawn && "svg" in drawn ? drawn.svg : null;
   const failed = current && "error" in current ? current.error : null;

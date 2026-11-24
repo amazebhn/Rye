@@ -1,10 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
-import { RotateCcw } from "lucide-react";
+import { Blocks, Bot, Cpu, Plug, RotateCcw, ScanSearch, SlidersHorizontal, Zap, type LucideIcon } from "lucide-react";
+import RetrievalSection from "./RetrievalSection";
 import ProviderLogo from "../shared/ProviderLogo";
 import { formatModelName, groupModelsByProvider } from "../../utils/modelNames";
 import type { ChatFolder, ChatRecord } from "../../utils/types";
 import { folderApi, readSuggestFolders, writeSuggestFolders, type CategorizeResponse } from "../shell/useChatFolders";
 import { useAgents, type AgentChattiness } from "../../contexts/AgentContext";
+import SkillPanel from "../skills/SkillPanel";
+import McpServersSection from "./McpServersSection";
+import ThemeSetting from "./ThemeSetting";
 
 type Tier = "low" | "medium" | "high";
 type Task = "chat" | "subagent" | "compaction" | "extraction" | "doc_review" | "labels";
@@ -53,6 +57,9 @@ const TASKS: { key: Task; name: string; description: string }[] = [
   { key: "labels", name: "Titles & step labels", description: "Chat titles and one-line summaries of each step." },
 ];
 
+const MODEL_TIERS_DESC =
+  "Choose the model behind each cost tier. Leave a tier on Auto to use the best available model of that class.";
+
 const SOURCE_LABEL: Record<Source, string> = {
   settings: "Set here",
   config: "config.toml",
@@ -80,10 +87,148 @@ async function request(method: "GET" | "PUT" | "DELETE", body?: unknown): Promis
   return json;
 }
 
-export default function SettingsPanel(folderProps: FolderProps) {
+export type SettingsTab = "general" | "models" | "search" | "agents" | "skills" | "mcp" | "integrations";
+type SaveStatus = "idle" | "saving" | "saved";
+
+/**
+ * The pages of Settings, in the order listed in its side navigation. Each is a page of its own
+ * because several of them (skills, MCP servers) grow long. To add one: an entry here and a branch
+ * in `SettingsPage` below.
+ */
+const PAGES: { key: SettingsTab; name: string; icon: LucideIcon; soon?: boolean }[] = [
+  { key: "general", name: "General", icon: SlidersHorizontal },
+  { key: "models", name: "Models", icon: Cpu },
+  { key: "search", name: "Search", icon: ScanSearch },
+  { key: "agents", name: "Agents", icon: Bot },
+  { key: "skills", name: "Skills", icon: Zap },
+  { key: "mcp", name: "MCP servers", icon: Plug },
+  { key: "integrations", name: "Integrations", icon: Blocks, soon: true },
+];
+
+interface Props extends FolderProps {
+  /** The page on show. The owner holds it so links from elsewhere can land on a page; left out, the panel keeps its own. */
+  tab?: SettingsTab;
+  onTabChange?: (tab: SettingsTab) => void;
+  /** Changes when settings were saved somewhere else (another browser tab): Models reloads, other pages keep their state. */
+  reloadKey?: number;
+}
+
+export default function SettingsPanel({ tab: tabProp, onTabChange, reloadKey = 0, ...folderProps }: Props) {
+  const [ownTab, setOwnTab] = useState<SettingsTab>("general");
+  const [status, setStatus] = useState<SaveStatus>("idle");
+  const requested = tabProp ?? ownTab;
+  // A page name remembered from an older build may no longer exist.
+  const tab = PAGES.some((p) => p.key === requested) ? requested : "general";
+  const navRefs = useRef<Partial<Record<SettingsTab, HTMLButtonElement | null>>>({});
+
+  function selectTab(next: SettingsTab) {
+    setOwnTab(next);
+    onTabChange?.(next);
+  }
+
+  // Up/down moves through the pages, as in any vertical list.
+  function onNavKeyDown(event: React.KeyboardEvent) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const index = PAGES.findIndex((p) => p.key === tab);
+    const next = PAGES[(index + (event.key === "ArrowDown" ? 1 : -1) + PAGES.length) % PAGES.length].key;
+    selectTab(next);
+    navRefs.current[next]?.focus();
+  }
+
+  return (
+    <div className="sop-panel settings-panel">
+      <div className="sop-panel-header">
+        <h2 className="sop-panel-title">Settings</h2>
+        <div className="sop-panel-toolbar">
+          {status !== "idle" && (
+            <span className="settings-status" role="status">{status === "saving" ? "Saving…" : "Saved"}</span>
+          )}
+        </div>
+      </div>
+
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Settings sections" onKeyDown={onNavKeyDown}>
+          {PAGES.map((page) => (
+            <button
+              key={page.key}
+              ref={(el) => { navRefs.current[page.key] = el; }}
+              type="button"
+              className={`settings-nav-item${tab === page.key ? " active" : ""}`}
+              aria-current={tab === page.key ? "page" : undefined}
+              onClick={() => selectTab(page.key)}
+            >
+              <page.icon size={15} aria-hidden="true" />
+              <span className="settings-nav-name">{page.name}</span>
+              {page.soon && <span className="settings-nav-soon">Soon</span>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sop-panel-body settings-page" key={tab}>
+          <SettingsPage tab={tab} reloadKey={reloadKey} onStatus={setStatus} folderProps={folderProps} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({
+  tab,
+  reloadKey,
+  onStatus,
+  folderProps,
+}: {
+  tab: SettingsTab;
+  reloadKey: number;
+  onStatus: (status: SaveStatus) => void;
+  folderProps: FolderProps;
+}) {
+  switch (tab) {
+    case "models":
+      return <ModelsPage key={reloadKey} onStatus={onStatus} />;
+    case "agents":
+      return <div className="settings-body"><AgentsSection /></div>;
+    case "skills":
+      return <div className="settings-body"><SkillPanel embedded /></div>;
+    case "mcp":
+      return <div className="settings-body"><McpServersSection /></div>;
+    case "search":
+      return <div className="settings-body"><RetrievalSection /></div>;
+    case "integrations":
+      return (
+        <div className="settings-body">
+          <section className="settings-section" aria-labelledby="settings-integrations-title">
+            <div className="settings-section-head">
+              <h3 className="settings-section-title" id="settings-integrations-title">
+                Integrations <span className="settings-source settings-soon">Coming later</span>
+              </h3>
+            </div>
+            <p className="settings-placeholder">
+              Connections to the apps and services you use will be managed here. Nothing to set up yet.
+            </p>
+          </section>
+        </div>
+      );
+    default:
+      return (
+        <div className="settings-body">
+          <section className="settings-section" aria-labelledby="settings-appearance-title">
+            <div className="settings-section-head">
+              <h3 className="settings-section-title" id="settings-appearance-title">Appearance</h3>
+            </div>
+            <ThemeSetting />
+          </section>
+          <FoldersSection {...folderProps} />
+        </div>
+      );
+  }
+}
+
+function ModelsPage({ onStatus }: { onStatus: (status: SaveStatus) => void }) {
   const [data, setData] = useState<ModelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [status, setStatus] = useState<SaveStatus>("idle");
 
   useEffect(() => {
     request("GET").then(setData).catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -94,6 +239,10 @@ export default function SettingsPanel(folderProps: FolderProps) {
     const timer = window.setTimeout(() => setStatus("idle"), 1800);
     return () => window.clearTimeout(timer);
   }, [status]);
+
+  // The panel header shows the save status; clear it when this tab goes away.
+  useEffect(() => { onStatus(status); }, [status, onStatus]);
+  useEffect(() => () => onStatus("idle"), [onStatus]);
 
   async function save(method: "PUT" | "DELETE", body?: unknown) {
     setStatus("saving");
@@ -108,28 +257,27 @@ export default function SettingsPanel(folderProps: FolderProps) {
   }
 
   return (
-    <div className="sop-panel">
-      <div className="sop-panel-header">
-        <h2 className="sop-panel-title">Settings</h2>
-        <div className="sop-panel-toolbar">
-          {status !== "idle" && (
-            <span className="settings-status" role="status">{status === "saving" ? "Saving…" : "Saved"}</span>
-          )}
-        </div>
-      </div>
-
-      <div className="sop-panel-body">
-        {!data && !error && <div className="sop-panel-empty">Loading settings…</div>}
+      <>
         {error && <div className="settings-error" role="alert">{error}</div>}
 
-        {data && (
           <div className="settings-body">
+            {/* While loading, the first heading is already in its place so the page doesn't jump when the data lands. */}
+            {!data && !error && (
+              <section className="settings-section" aria-busy="true">
+                <div className="settings-section-head">
+                  <h3 className="settings-section-title">Model tiers</h3>
+                  <p className="settings-section-desc">{MODEL_TIERS_DESC}</p>
+                </div>
+                <p className="settings-placeholder settings-loading">Loading settings…</p>
+              </section>
+            )}
+
+            {data && (
+            <>
             <section className="settings-section" aria-labelledby="settings-models-title">
               <div className="settings-section-head">
                 <h3 className="settings-section-title" id="settings-models-title">Model tiers</h3>
-                <p className="settings-section-desc">
-                  Choose the model behind each cost tier. Leave a tier on Auto to use the best available model of that class.
-                </p>
+                <p className="settings-section-desc">{MODEL_TIERS_DESC}</p>
               </div>
               <div className="settings-tiers">
                 {TIERS.map((tier, index) => {
@@ -212,10 +360,6 @@ export default function SettingsPanel(folderProps: FolderProps) {
               onChange={(patch) => void save("PUT", { decision: patch })}
             />
 
-            <AgentsSection />
-
-            <FoldersSection {...folderProps} />
-
             <footer className="settings-foot">
               <p>
                 Changes save automatically to <code>{data.settings_file}</code> and take precedence over{" "}
@@ -225,10 +369,10 @@ export default function SettingsPanel(folderProps: FolderProps) {
                 <RotateCcw size={13} /> Reset to config.toml
               </button>
             </footer>
+            </>
+            )}
           </div>
-        )}
-      </div>
-    </div>
+      </>
   );
 }
 

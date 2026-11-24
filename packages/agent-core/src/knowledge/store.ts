@@ -13,13 +13,22 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "../config.js";
 import {
-  blobToFloat32,
-  cosineSimilarity,
+  configuredEmbeddingModel,
   embedBatch,
+  embedQuery,
   embedText,
   float32ToBlob,
   type EmbeddingResult,
 } from "../embeddings/index.js";
+import { VectorIndex, quantise } from "../embeddings/vector-index.js";
+import { RELEVANT_SCORE, rerank, type RerankFn } from "../embeddings/rerank.js";
+import { createHash } from "node:crypto";
+
+/** Identifies the exact text a vector was made from. */
+const textHash = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 32);
+
+/** How many fused candidates the reranker reads for one search; each costs a model call. */
+const RERANK_POOL = 12;
 
 export type KnowledgeSource = "manual" | "agent";
 
@@ -47,6 +56,8 @@ export interface KnowledgeSearchHit {
   snippet: string;
   score: number;
   match_type: "hybrid" | "semantic" | "keyword";
+  /** The reranker's relevance for this chunk (0 to 1), when one was asked. */
+  rerank_score?: number;
   /** Row id of the matched chunk; `${doc_id}#${chunk_id}` identifies it in a conversation. */
   chunk_id: number;
   /** Cosine similarity to the query, when both sides had an embedding. */
@@ -193,21 +204,49 @@ const STANDOUT_MARGIN = 0.08;
 /** ...and when it also shares a keyword with the query. */
 const KEYWORD_BACKED_MARGIN = 0.05;
 
-const median = (values: number[]): number => {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
-
 export class KnowledgeStore {
   private db: Database;
   private readonly embedBatchFn: EmbedBatchFn;
   private readonly embedTextFn: EmbedTextFn;
+  // Every chunk embedding, packed in memory. Built on first search and dropped whenever chunks change.
+  private vectors: VectorIndex | null = null;
+
+  private vectorsModel: string | null = null;
+  /** The model new vectors should come from, when known up front; "" when it isn't. */
+  private readonly targetModel: () => string;
+
+  /** Only vectors from the model that embedded the query are comparable with it. */
+  private vectorIndex(dimensions: number, model: string): VectorIndex {
+    if (this.vectors?.dimensions === dimensions && this.vectorsModel === model) return this.vectors;
+    this.vectorsModel = model;
+    const rows = this.db.query("SELECT id, embedding FROM knowledge_chunks WHERE embedding IS NOT NULL AND embedding_model = ?").all(model) as Array<{
+      id: number;
+      embedding: Uint8Array;
+    }>;
+    const index = new VectorIndex(dimensions, rows.length);
+    for (const row of rows) {
+      // Stored as little-endian float32; embeddings from another model (a different size) are left out.
+      if (row.embedding.byteLength !== dimensions * 4) continue;
+      const bytes = new Uint8Array(row.embedding);
+      index.add(Number(row.id), quantise(new Float32Array(bytes.buffer, 0, dimensions)));
+    }
+    this.vectors = index;
+    return index;
+  }
+
+  private readonly rerankFn: RerankFn | undefined;
+  private readonly embedQueryFn: EmbedTextFn;
 
   constructor(
     dbPath = join(DATA_DIR, "knowledge.db"),
-    embedders?: { embedBatch?: EmbedBatchFn; embedText?: EmbedTextFn },
+    embedders?: { embedBatch?: EmbedBatchFn; embedText?: EmbedTextFn; embedQuery?: EmbedTextFn; rerank?: RerankFn; model?: () => string },
   ) {
+    // Only the real knowledge base reranks and reads the configured model by default; a store on another path (a test) passes its own.
+    const real = dbPath === join(DATA_DIR, "knowledge.db");
+    this.rerankFn = embedders?.rerank ?? (real ? rerank : undefined);
+    this.targetModel = embedders?.model ?? (real ? configuredEmbeddingModel : () => "");
+    // Queries may be worded differently from documents for the model (see queryPrefix); a supplied embedText serves both.
+    this.embedQueryFn = embedders?.embedQuery ?? embedders?.embedText ?? embedQuery;
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
@@ -241,6 +280,15 @@ export class KnowledgeStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc_id ON knowledge_chunks(doc_id);
+
+      -- Vectors from the embedding model used before the current one, keyed by the text they were made
+      -- from, so switching back restores them instead of embedding everything again. Derived data.
+      CREATE TABLE IF NOT EXISTS knowledge_embedding_backup (
+        model     TEXT NOT NULL,
+        text_hash TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        PRIMARY KEY (model, text_hash)
+      );
 
       CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
         chunk_id UNINDEXED,
@@ -344,20 +392,24 @@ export class KnowledgeStore {
   }
 
   delete(id: string): boolean {
+    this.vectors = null;
     this.db.run("DELETE FROM knowledge_chunks_fts WHERE doc_id = ?", [id]);
     const res = this.db.run("DELETE FROM knowledge_docs WHERE id = ?", [id]);
     return res.changes > 0;
   }
 
-  async reindexAll(): Promise<{ docs: number; chunks: number; embedded: boolean; model: string | null }> {
+  async reindexAll(onProgress?: (done: number, total: number) => void): Promise<{ docs: number; chunks: number; embedded: boolean; model: string | null }> {
     const docs = this.list();
     let totalChunks = 0;
     let model: string | null = null;
-    for (const doc of docs) {
+    for (const [n, doc] of docs.entries()) {
+      onProgress?.(n, docs.length);
       const info = await this.indexDoc(doc.id, doc.title, doc.content);
       totalChunks += info.chunks;
       if (info.model) model = info.model;
     }
+    // Everything is on `model` now; what the backup held for it has been put back in place.
+    if (model) this.db.run("DELETE FROM knowledge_embedding_backup WHERE model = ?", [model]);
     return { docs: docs.length, chunks: totalChunks, embedded: model !== null, model };
   }
 
@@ -367,11 +419,14 @@ export class KnowledgeStore {
    */
   async search(
     query: string,
-    opts?: { limit?: number; agentId?: string | null; category?: string; maxChunksPerDoc?: number },
+    opts?: { limit?: number; agentId?: string | null; category?: string; maxChunksPerDoc?: number; rerank?: boolean },
   ): Promise<KnowledgeSearchHit[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
     const limit = opts?.limit ?? 5;
+    // With a reranker, gather a wider pool and let it pick the best `limit` of them.
+    const rerank = opts?.rerank !== false && this.rerankFn !== undefined;
+    const pool = rerank ? Math.max(limit, RERANK_POOL) : limit;
     const maxPerDoc = opts?.maxChunksPerDoc ?? 2;
 
     const ftsRank = new Map<number, number>();
@@ -403,55 +458,58 @@ export class KnowledgeStore {
       whereParts.push("d.category = ?");
       params.push(opts.category);
     }
-    const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
+    // With a filter (an agent's notes, one category), only these chunks may be returned. Ids only: cheap.
+    const allowed =
+      whereParts.length > 0
+        ? new Set(
+            (this.db
+              .query(`SELECT c.id FROM knowledge_chunks c JOIN knowledge_docs d ON d.id = c.doc_id WHERE ${whereParts.join(" AND ")}`)
+              .all(...params) as Array<{ id: number }>).map((r) => Number(r.id)),
+          )
+        : null;
+    if (allowed && allowed.size === 0) return [];
 
+    const vecRank = new Map<number, number>();
+    const similarity = new Map<number, number>();
+    let background: number | null = null;
+    const queryTokens = meaningfulTokens(trimmed);
+    const queryEmbed = await this.embedQueryFn(trimmed);
+    if (queryEmbed) {
+      // One pass over the packed index scores every chunk; nothing is read from the database for this.
+      const scored = this.vectorIndex(queryEmbed.vector.length, queryEmbed.model).search(queryEmbed.vector, {
+        limit: Infinity,
+        allow: allowed ? (id) => allowed.has(id) : undefined,
+        minForBackground: MIN_CHUNKS_FOR_BACKGROUND,
+      });
+      background = scored.background;
+      for (const match of scored.matches) similarity.set(match.id, match.similarity);
+      scored.matches
+        .filter((match) => match.similarity >= MIN_SEMANTIC_SIMILARITY)
+        .slice(0, Math.max(limit * 6, 30))
+        .forEach((match, idx) => vecRank.set(match.id, idx + 1));
+    }
+
+    const candidateIds = new Set<number>([...ftsRank.keys(), ...vecRank.keys()].filter((id) => !allowed || allowed.has(id)));
+    if (candidateIds.size === 0) return [];
+    // Text and document details are fetched for the candidates only, not for every chunk.
     const chunkRows = this.db
       .query(
-        `SELECT c.id, c.doc_id, c.heading, c.content, c.embedding,
-                d.title, d.category, d.tags, d.source
+        `SELECT c.id, c.doc_id, c.heading, c.content, d.title, d.category, d.tags, d.source
          FROM knowledge_chunks c
          JOIN knowledge_docs d ON d.id = c.doc_id
-         ${whereSql}`,
+         WHERE c.id IN (${[...candidateIds].map(() => "?").join(",")})`,
       )
-      .all(...params) as Array<{
+      .all(...candidateIds) as Array<{
         id: number;
         doc_id: string;
         heading: string;
         content: string;
-        embedding: Uint8Array | Buffer | null;
         title: string;
         category: string;
         tags: string;
         source: string;
       }>;
-
-    if (chunkRows.length === 0) return [];
-
     const byId = new Map(chunkRows.map((r) => [Number(r.id), r]));
-
-    const vecRank = new Map<number, number>();
-    const similarity = new Map<number, number>();
-    const queryTokens = meaningfulTokens(trimmed);
-    const queryEmbed = await this.embedTextFn(trimmed);
-    if (queryEmbed) {
-      const scoredVec: Array<{ id: number; sim: number }> = [];
-      for (const row of chunkRows) {
-        if (!row.embedding) continue;
-        const vec = blobToFloat32(row.embedding);
-        if (vec.length !== queryEmbed.vector.length) continue;
-        const sim = cosineSimilarity(queryEmbed.vector, vec);
-        similarity.set(Number(row.id), sim);
-        if (sim >= MIN_SEMANTIC_SIMILARITY) {
-          scoredVec.push({ id: Number(row.id), sim });
-        }
-      }
-      scoredVec.sort((a, b) => b.sim - a.sim);
-      scoredVec.slice(0, Math.max(limit * 6, 30)).forEach((item, idx) => {
-        vecRank.set(item.id, idx + 1);
-      });
-    }
-
-    const candidateIds = new Set<number>([...ftsRank.keys(), ...vecRank.keys()]);
     const fused: Array<{
       id: number;
       score: number;
@@ -470,7 +528,6 @@ export class KnowledgeStore {
     }
 
     fused.sort((a, b) => b.score - a.score);
-    const background = similarity.size >= MIN_CHUNKS_FOR_BACKGROUND ? median([...similarity.values()]) : null;
 
     const perDocCount = new Map<string, number>();
     const hits: KnowledgeSearchHit[] = [];
@@ -495,10 +552,27 @@ export class KnowledgeStore {
         score: Number(item.score.toFixed(5)),
         match_type: item.matchType,
       });
-      if (hits.length >= limit) break;
+      if (hits.length >= pool) break;
     }
 
-    return hits;
+    // A search someone asked for is reordered, not filtered: they get `limit` results, best first.
+    const scores = rerank && hits.length > 1 ? await this.rerankHits(trimmed, hits) : null;
+    if (!scores) return hits.slice(0, limit);
+    return hits
+      .map((hit, i) => ({ ...hit, rerank_score: scores[i] }))
+      .sort((a, b) => b.rerank_score - a.rerank_score)
+      .slice(0, limit);
+  }
+
+  /** Relevance of each hit to the query from the reranker, or null when there is none to ask. */
+  private async rerankHits(query: string, hits: KnowledgeSearchHit[]): Promise<number[] | null> {
+    if (!this.rerankFn) return null;
+    try {
+      const scores = await this.rerankFn(query, hits.map((h) => `${h.title}${h.heading ? ` — ${h.heading}` : ""}\n${h.snippet}`));
+      return scores && scores.length === hits.length ? scores : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -515,10 +589,21 @@ export class KnowledgeStore {
     const exclude = new Set(opts.exclude ?? []);
     const wantedTerms = Math.max(Math.min(2, tokens.length), Math.ceil(tokens.length / 3));
 
-    const candidates = await this.search(query, { limit: limit * 4, agentId: opts.agentId });
+    const candidates = (await this.search(query, { limit: limit * 4, agentId: opts.agentId, rerank: false })).filter((h) => !exclude.has(chunkKey(h)));
+
+    // With a reranker, it decides: it reads the question and each note together, which tells
+    // related from unrelated far better than the similarity gap below can.
+    const scores = candidates.length > 0 ? await this.rerankHits(query, candidates) : null;
+    if (scores) {
+      return candidates
+        .map((hit, i) => ({ ...hit, rerank_score: scores[i] }))
+        .filter((h) => h.rerank_score >= RELEVANT_SCORE)
+        .sort((a, b) => b.rerank_score - a.rerank_score)
+        .slice(0, limit);
+    }
+
     return candidates
       .filter((h) => {
-        if (exclude.has(chunkKey(h))) return false;
         if (h.keyword_terms >= wantedTerms) return true;
         if (h.similarity === null) return false;
         if (h.background_similarity === null) return h.similarity >= minSimilarity;
@@ -548,15 +633,69 @@ export class KnowledgeStore {
     this.db.close();
   }
 
+  /** Which models the stored vectors came from, and what is set aside from the previous one. */
+  embeddingStatus(): { chunks: number; models: Array<{ model: string; chunks: number }>; backup: { model: string; chunks: number } | null } {
+    const chunks = (this.db.query("SELECT COUNT(*) AS n FROM knowledge_chunks").get() as { n: number }).n;
+    const models = this.db
+      .query("SELECT embedding_model AS model, COUNT(*) AS chunks FROM knowledge_chunks WHERE embedding IS NOT NULL AND embedding_model IS NOT NULL GROUP BY embedding_model ORDER BY chunks DESC")
+      .all() as Array<{ model: string; chunks: number }>;
+    const backup = this.db
+      .query("SELECT model, COUNT(*) AS chunks FROM knowledge_embedding_backup GROUP BY model ORDER BY chunks DESC LIMIT 1")
+      .get() as { model: string; chunks: number } | null;
+    return { chunks, models, backup: backup ?? null };
+  }
+
   private async indexDoc(
     docId: string,
     title: string,
     content: string,
   ): Promise<{ chunks: number; model: string | null }> {
     const chunks = chunkMarkdown(content);
-    const textsToEmbed = chunks.map((c) => `${title}${c.heading ? ` — ${c.heading}` : ""}\n${c.content}`);
-    const embeddings = textsToEmbed.length > 0 ? await this.embedBatchFn(textsToEmbed) : null;
-    const model = embeddings?.[0]?.model ?? null;
+    const textOf = (heading: string, body: string) => `${title}${heading ? ` — ${heading}` : ""}\n${body}`;
+    const textsToEmbed = chunks.map((c) => textOf(c.heading, c.content));
+    const hashes = textsToEmbed.map(textHash);
+    const target = this.targetModel();
+
+    // What this document has now: reused when the text and model are unchanged, set aside when the model is changing.
+    const old = (this.db
+      .query("SELECT heading, content, embedding, embedding_model FROM knowledge_chunks WHERE doc_id = ? AND embedding IS NOT NULL AND embedding_model IS NOT NULL")
+      .all(docId) as Array<{ heading: string; content: string; embedding: Uint8Array; embedding_model: string }>
+    ).map((row) => ({ model: row.embedding_model, hash: textHash(textOf(row.heading, row.content)), embedding: row.embedding }));
+
+    // Vectors already made by the wanted model for exactly this text, here or in the backup, need no model call.
+    let blobs: Array<Uint8Array | null> = textsToEmbed.map(() => null);
+    if (target) {
+      const kept = new Map(old.filter((o) => o.model === target).map((o) => [o.hash, o.embedding]));
+      const fromBackup = this.db.query("SELECT embedding FROM knowledge_embedding_backup WHERE model = ? AND text_hash = ?");
+      blobs = hashes.map((hash) => kept.get(hash) ?? (fromBackup.get(target, hash) as { embedding: Uint8Array } | null)?.embedding ?? null);
+    }
+    const reused = blobs.filter(Boolean).length;
+    let model: string | null = reused > 0 ? target : null;
+    const missing = blobs.flatMap((blob, i) => (blob ? [] : [i]));
+    if (missing.length > 0) {
+      let embedded = await this.embedBatchFn(missing.map((i) => textsToEmbed[i]));
+      let into = missing;
+      // Another model answered than the one the reused vectors came from (a hosted fallback): one document, one model.
+      if (embedded && reused > 0 && embedded[0]?.model !== target) {
+        embedded = await this.embedBatchFn(textsToEmbed);
+        into = textsToEmbed.map((_, i) => i);
+      }
+      if (embedded && embedded.length === into.length) {
+        model = embedded[0]?.model ?? model;
+        into.forEach((i, n) => { blobs[i] = float32ToBlob(embedded![n].vector); });
+      }
+    }
+
+    // Vectors from a model that is being replaced are kept, one previous model at a time, so switching back needs no re-embedding.
+    const outgoing = old.filter((o) => o.model !== model);
+    if (outgoing.length > 0) {
+      this.db.run("DELETE FROM knowledge_embedding_backup WHERE model NOT IN (?, ?)", [outgoing[0].model, model ?? ""]);
+      const keep = this.db.prepare("INSERT OR REPLACE INTO knowledge_embedding_backup (model, text_hash, embedding) VALUES (?, ?, ?)");
+      for (const o of outgoing) keep.run(o.model, o.hash, o.embedding);
+    }
+
+    // The chunks below replace this document's old ones, so the packed index is rebuilt on the next search.
+    this.vectors = null;
 
     this.db.run("DELETE FROM knowledge_chunks_fts WHERE doc_id = ?", [docId]);
     this.db.run("DELETE FROM knowledge_chunks WHERE doc_id = ?", [docId]);
@@ -572,15 +711,7 @@ export class KnowledgeStore {
 
     for (let i = 0; i < chunks.length; i++) {
       const c = chunks[i];
-      const vec = embeddings?.[i]?.vector;
-      const res = insertChunk.run(
-        docId,
-        i,
-        c.heading,
-        c.content,
-        vec ? float32ToBlob(vec) : null,
-        model,
-      );
+      const res = insertChunk.run(docId, i, c.heading, c.content, blobs[i], blobs[i] ? model : null);
       const chunkId = Number(res.lastInsertRowid);
       insertFts.run(chunkId, docId, title, c.heading, c.content);
     }

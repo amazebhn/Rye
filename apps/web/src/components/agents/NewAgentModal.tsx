@@ -12,7 +12,7 @@ import ModelSelect from "../shared/ModelSelect";
 import AgentAvatar, { AGENT_GRADIENTS } from "./AgentAvatar";
 
 const TOOL_GROUP_OPTIONS = [
-  { id: "mysql", label: "MySQL" },
+  { id: "sql", label: "SQL databases" },
   { id: "aws", label: "AWS" },
   { id: "jira", label: "Jira" },
   { id: "git", label: "Git" },
@@ -496,10 +496,10 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
                             fontWeight: active ? 600 : 400,
                             cursor: "pointer",
                             border: active
-                              ? "1px solid var(--accent, #6366f1)"
+                              ? "1px solid var(--main-ai-accent)"
                               : "1px solid var(--main-border)",
                             background: active
-                              ? "color-mix(in srgb, var(--accent, #6366f1) 16%, transparent)"
+                              ? "color-mix(in srgb, var(--main-ai-accent) 16%, transparent)"
                               : "transparent",
                             color: active ? "var(--main-fg)" : "var(--main-fg-muted)",
                             transition: "background 120ms ease, border-color 120ms ease",
@@ -515,10 +515,10 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
                               alignItems: "center",
                               justifyContent: "center",
                               border: active
-                                ? "1px solid var(--accent, #6366f1)"
+                                ? "1px solid var(--main-ai-accent)"
                                 : "1px solid var(--main-fg-faint)",
-                              background: active ? "var(--accent, #6366f1)" : "transparent",
-                              color: "#fff",
+                              background: active ? "var(--main-ai-accent)" : "transparent",
+                              color: "var(--main-bg)",
                             }}
                           >
                             {active && <Check size={10} strokeWidth={3} />}

@@ -31,6 +31,7 @@ import { TOOLS, executeTool, drainPendingDraftEvents, setMemoryStore, setKnowled
 import {
   CORE_GROUP,
   LOAD_TOOLS_TOOL_NAME,
+  SQL_GROUP,
   forgetToolGroups,
   formatGroupList,
   getRememberedToolGroups,
@@ -43,6 +44,7 @@ import {
   toolsForExactGroups,
   toolsForGroups,
 } from "../tools/groups.js";
+import { LEGACY_MYSQL_NAME, describeConnections, listConnections } from "../db/connections.js";
 import { ASK_USER_TOOL_NAME, normalizeAskUserArgs } from "../tools/ask-user.js";
 import { installDecisionToolGroupSelector } from "../decision/tool-groups.js";
 import { runSubagents } from "./subagent.js";
@@ -206,7 +208,7 @@ Always format your responses in Markdown. Use tables, code blocks, and bullet li
 
 Be concise — short paragraphs or bullets. Avoid lengthy preambles or restating the question. Lead with the answer.
 
-**Available connectors:** MySQL, AWS (CloudWatch, RDS, ECS, EC2, ALB), Jira, Git/Bitbucket, code search. Never say a connector or tool is unavailable — if its tools aren't loaded, load its group with **load_tools_tool**, then attempt the call and report the actual error if it fails.
+**Available connectors:** SQL databases (MySQL, PostgreSQL), AWS (CloudWatch, RDS, ECS, EC2, ALB), Jira, Git/Bitbucket, code search. Never say a connector or tool is unavailable — if its tools aren't loaded, load its group with **load_tools_tool**, then attempt the call and report the actual error if it fails.
 
 **Custom tool creation** (custom_tools group): You can create new tools to improve your own capabilities. When you find yourself repeatedly doing the same transformation (e.g. reformatting a timestamp, grepping through tool output, converting bytes to MB), consider creating a custom tool:
 1. Call **propose_tool_tool** with the tool name, description, parameter definitions, and a JS function body.
@@ -819,6 +821,14 @@ export async function* runAgent(
   systemPrompt += `\n\n---\n**Active environment for this chat:** ${activeEnvName} (key: ${activeEnvKey})${
     activeOverrides.length > 0 ? ` (overrides: ${activeOverrides.join(", ")})` : " (base config)"
   }\nThis is authoritative: all connector tools in this chat already use it, and the user can change it between turns from the UI. Do not call switch_env_tool for the environment that is already active; only call it when the user asks for a different one.\nAvailable environments: ${availableEnvKeys.join(", ")}`;
+
+  // The databases this environment can reach, by name and engine (never credentials), so the agent
+  // knows which `connection` to pass and which SQL dialect to write. Part of the environment block:
+  // it changes only when the environment or the config does.
+  const databases = listConnections(effectiveSettings).connections.filter((c) => c.name !== LEGACY_MYSQL_NAME || c.database);
+  if (databases.length > 0 && (!leanAgent || enabledGroups.has(SQL_GROUP))) {
+    systemPrompt += `\nDatabases in this environment (pass the name as \`connection\` to the SQL tools; write SQL in that engine's dialect):\n${describeConnections(databases)}`;
+  }
 
   // Inject saved memories first so the agent treats them as ground truth
   const memoryBlock = usesStores ? memoryStore.formatForPrompt(agent?.id, settings.context.memory_budget_tokens) : "";

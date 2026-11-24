@@ -208,6 +208,11 @@ export function getServerStatuses(): ServerStatus[] {
   return statuses;
 }
 
+/** The tools a connected server offers, for showing in Settings. Empty when it isn't connected. */
+export function getServerTools(server: string): Array<{ name: string; description: string; readOnly: boolean }> {
+  return (connections.get(server)?.tools ?? []).map((t) => ({ name: t.name, description: t.description ?? "", readOnly: t.readOnly }));
+}
+
 export function getMcpOAuthAuthorization(server: string): { authorizationUrl: string } | null {
   const cfg = loadMcpConfig().find((entry) => entry.name === server && entry.auth === "oauth");
   const pending = cfg ? new McpOAuthProvider(cfg).pendingAuthorization() : null;

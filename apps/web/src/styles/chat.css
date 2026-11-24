@@ -139,6 +139,7 @@
   color: var(--main-fg);
   box-shadow: 0 18px 44px rgba(55, 53, 47, 0.14), 0 3px 10px rgba(55, 53, 47, 0.07);
 }
+:root[data-theme="dark"] .stored-results-popover { box-shadow: var(--shadow-float); }
 
 .stored-results-heading {
   display: flex;
@@ -445,6 +446,60 @@
   gap: 12px;
   align-items: flex-start;
   overflow: visible;
+}
+
+/* Top of a long chat whose earlier messages aren't drawn yet. */
+.message-list-earlier {
+  align-self: center;
+  margin: 4px 0 20px;
+  padding: 5px 12px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-pill);
+  background: var(--main-bg);
+  color: var(--main-fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.message-list-earlier:hover { background: var(--main-surface); color: var(--main-fg); }
+.message-list-earlier:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+
+/* Shown in place of the messages while an opened chat is being fetched. */
+.chat-loading {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--main-bg);
+  color: var(--main-fg-muted);
+  font-size: 13px;
+}
+
+/* The message a search result pointed at: a soft tint over what was said (not the name or the
+   buttons beside it) that fades out. A user bubble keeps its own fill and only gets the halo. */
+.message-found {
+  --found-tint: color-mix(in srgb, var(--main-accent) 12%, transparent);
+  border-radius: var(--radius-md);
+  animation: message-found-halo 2.6s ease-out;
+}
+.md-body.message-found { animation-name: message-found-fill; }
+@keyframes message-found-halo {
+  0%, 35% { box-shadow: 0 0 0 6px var(--found-tint); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes message-found-fill {
+  0%, 35% { background-color: var(--found-tint); box-shadow: 0 0 0 8px var(--found-tint); }
+  100% { background-color: transparent; box-shadow: 0 0 0 8px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message-found,
+  .md-body.message-found {
+    animation: none;
+    box-shadow: 0 0 0 6px var(--found-tint);
+  }
 }
 
 .message-row.user {
@@ -2032,7 +2087,7 @@ button.timeline-step-head:hover,
 
 .prompt-option--primary .prompt-option-key {
   border-color: transparent;
-  background: rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, currentColor 16%, transparent);
   color: inherit;
 }
 
