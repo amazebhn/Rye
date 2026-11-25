@@ -26,7 +26,6 @@ import AgentHoverCard, { AgentMentionPill, AgentMentionText } from "../agents/Ag
 import MentionComposer from "./MentionComposer";
 import AttachmentChips from "./AttachmentChips";
 import { useAgents } from "../../contexts/AgentContext";
-import { MOBILE_BREAKPOINT } from "../../utils/viewport";
 import {
   ArrowDown,
   Check,
@@ -573,34 +572,31 @@ function WideTable({
   const [offset, setOffset] = useState(0);
 
   useLayoutEffect(() => {
+    // The table is centred in the message list's visible width (its client box: inside any scrollbar, left of a
+    // docked Artifacts panel), with the messages' 16px gutter on both sides. Measuring .main instead put it
+    // flush against the panel when an overlay scrollbar took no room, and an extra margin shifted it right.
+    const list = wrapRef.current?.closest(".message-list") ?? null;
     function recalc() {
       const el = wrapRef.current;
-      if (!el) return;
-      // Walk up to find .main
-      let main: Element | null = el;
-      while (main && !main.classList.contains("main"))
-        main = main.parentElement;
-      if (!main) return;
-
-      const mainRect = main.getBoundingClientRect();
-      // On a phone the table lines up with the messages' 16px gutters (chat.css).
-      const narrow = mainRect.width < MOBILE_BREAKPOINT;
-      const marginX = narrow ? 16 : 10;
-      const messageRect = el?.parentElement?.getBoundingClientRect() ?? {
-        width: 0,
-        x: 0,
-      };
-      const TABLE_MAX = Math.min(mainRect.width, 1140) - marginX * 2;
-
-      // Also fix the width so it matches what we measured
-      el.style.width = TABLE_MAX + "px";
-      setOffset(
-        mainRect.x - messageRect.x + (narrow ? 0 : marginX) + (mainRect.width - TABLE_MAX) / 2,
-      );
+      if (!el || !list) return;
+      const listRect = list.getBoundingClientRect();
+      const visible = list.clientWidth;
+      const gutter = 16;
+      const width = Math.max(0, Math.min(visible, 1140) - gutter * 2);
+      const messageX = el.parentElement?.getBoundingClientRect().x ?? listRect.x;
+      el.style.width = width + "px";
+      setOffset(listRect.x + list.clientLeft + (visible - width) / 2 - messageX);
     }
     recalc();
+    // Follow the list itself, not the window: pinning the Artifacts panel, collapsing the sidebar or a scrollbar
+    // appearing all change its width without a window resize.
+    const observer = typeof ResizeObserver !== "undefined" && list ? new ResizeObserver(() => recalc()) : null;
+    if (observer && list) observer.observe(list);
     window.addEventListener("resize", recalc);
-    return () => window.removeEventListener("resize", recalc);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", recalc);
+    };
   }, []);
 
   return (

@@ -1,0 +1,31 @@
+/* Notifications: the chat-row "waiting for you" dot, the one-time nudge, and Settings → General → Notifications. */
+
+/* A chat waiting on a question or approval: the unread dot with a halo, so it reads apart from "unread". */
+.sidebar-unread.sidebar-waiting {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+/* The nudge sits where the folder toast does, and above it when both show. */
+.notify-nudge-region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 600;
+}
+body:has(.folder-toast) .notify-nudge-region { bottom: 140px; }
+
+.notify-nudge .folder-toast-actions { flex-wrap: wrap; }
+
+/* Settings: the permission line under the master switch, and the per-type list indented under it. */
+.settings-notify-status { margin: 8px 0 0; }
+.settings-notify-types { margin-top: 10px; }
+.settings-notify-types[aria-disabled="true"] .settings-task-text { opacity: 0.55; }
+
+@media (max-width: 767px) {
+  .notify-nudge-region {
+    left: 16px;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .notify-nudge-region .folder-toast { width: auto; max-width: none; }
+}

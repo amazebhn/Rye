@@ -74,9 +74,8 @@
   font-family: 'Fira Code', 'Menlo', monospace;
 }
 
-/* ── Stored results picker ──────────────────────────────────────────────── */
+/* ── Header actions: Artifacts and the ⋯ menu ───────────────────────────── */
 
-.stored-results-picker,
 .chat-header-menu {
   position: relative;
   flex-shrink: 0;
@@ -122,199 +121,10 @@
   outline-offset: 1px;
 }
 
-.stored-results-popover {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  z-index: 300;
-  width: min(390px, calc(100vw - 32px));
-  max-height: min(560px, calc(100vh - 88px));
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  padding: 8px;
-  border: 1px solid var(--main-border);
-  border-radius: var(--radius-xl);
-  background: var(--main-bg);
-  color: var(--main-fg);
-  box-shadow: 0 18px 44px rgba(55, 53, 47, 0.14), 0 3px 10px rgba(55, 53, 47, 0.07);
-}
-:root[data-theme="dark"] .stored-results-popover { box-shadow: var(--shadow-float); }
-
-.stored-results-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 8px 10px;
-}
-
-.stored-results-heading > div {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.stored-results-heading strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.stored-results-heading span {
-  color: var(--main-fg-faint);
-  font-size: 11px;
-}
-
-.stored-results-count {
-  min-width: 22px;
-  padding: 2px 6px;
-  box-sizing: border-box;
-  border-radius: var(--radius-lg);
-  background: var(--main-surface);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.stored-results-search {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0 2px 7px;
-  padding: 0 9px;
-  min-height: 34px;
-  border: 1px solid var(--main-border);
-  border-radius: var(--radius-sm);
-  background: var(--main-surface);
-  color: var(--main-fg-faint);
-}
-
-.stored-results-search:focus-within {
-  border-color: var(--main-fg-faint);
-  background: var(--main-bg);
-  box-shadow: 0 0 0 2px var(--main-surface);
-}
-
-.stored-results-search input {
-  flex: 1;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--main-fg);
-  font: inherit;
-  font-size: 12px;
-}
-
-.stored-results-search input::placeholder {
-  color: var(--main-fg-faint);
-}
-
-.stored-results-list {
-  min-height: 80px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.stored-result-option {
-  width: 100%;
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 9px 8px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--main-fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.1s ease;
-}
-
-.stored-result-option:hover,
-.stored-result-option:focus-visible {
-  outline: none;
-  background: var(--main-surface);
-}
-
-.stored-result-icon {
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--main-border);
-  border-radius: var(--radius-sm);
-  background: var(--main-bg);
-  color: var(--main-fg-muted);
-}
-
-.stored-result-content {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.stored-result-label {
-  overflow: hidden;
-  color: var(--main-fg);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stored-result-meta {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  color: var(--main-fg-faint);
-  font-size: 10px;
-}
-
-.stored-result-meta code {
-  color: var(--main-accent-alt);
-  font-size: 10px;
-}
-
-.stored-result-source {
-  overflow: hidden;
-  color: var(--main-fg-muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stored-results-state {
-  padding: 28px 12px;
-  color: var(--main-fg-faint);
-  font-size: 12px;
-  text-align: center;
-}
-
-.stored-results-footer {
-  margin-top: 5px;
-  padding: 7px 8px 2px;
-  border-top: 1px solid var(--main-border-subtle);
-  color: var(--main-fg-faint);
-  font-size: 10px;
-}
-
-@media (max-width: 640px) {
-  .stored-results-popover {
-    position: fixed;
-    top: 54px;
-    right: 10px;
-    left: 10px;
-    width: auto;
-  }
-}
+/* Opens the Artifacts panel (a .chat-header-db-btn). Until the chat has a file or result its slot is kept
+   but hidden, so it appears without moving the title or the ⋯ menu. */
+.chat-header-artifacts-btn { flex-shrink: 0; }
+.chat-header-artifacts-btn.is-empty { visibility: hidden; }
 
 /* ── Message list ─────────────────────────────────────────────────────────── */
 
@@ -710,6 +520,11 @@
 
 /* Numbers are left-aligned like text (matching the full-screen grid), with equal-width digits. */
 .md-body .md-table-grid .is-num { font-variant-numeric: tabular-nums; }
+
+/* In a narrow chat the table scrolls sideways in its frame rather than squeezing: short values stay on one
+   line, and long text wraps no narrower than a readable measure (MarkdownTable marks the columns). */
+.md-body .md-table-grid td.is-short { white-space: nowrap; }
+.md-body .md-table-grid td.is-long { min-width: 34ch; }
 
 .md-table-sort {
   width: 100%;
@@ -2979,7 +2794,6 @@ button.timeline-step-head:hover,
   .chat-header-title { min-width: 0; font-size: 14px; color: var(--main-fg); }
   .chat-header-title > span { min-width: 0; }
   .chat-header-db-btn { width: 36px; height: 36px; }
-  .stored-results-popover { top: calc(52px + env(safe-area-inset-top)); left: 8px; right: 8px; }
 
   .message-list { padding: 20px 16px 24px; }
   .message-row,

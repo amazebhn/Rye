@@ -74,6 +74,18 @@ export interface Artifact {
   versions: ArtifactVersion[]; // ascending; last is latest
 }
 
+// A stored query/tool result (GET /result?session_id=), without its rows. Results expire.
+export interface StoredResultSummary {
+  id: string;
+  createdAt: number;
+  source: string;
+  label: string;
+  kind: "table" | "text";
+  columns: string[];
+  rowCount: number;
+  expiresAt?: number; // absent from servers older than the Artifacts panel
+}
+
 export interface ChatRecord {
   id: string;
   title: string;

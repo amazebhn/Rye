@@ -9,14 +9,17 @@ import { Type } from "typebox";
 import {
   ARTIFACT_FORMATS,
   ArtifactError,
+  MAX_ARTIFACT_BYTES,
   artifactFilename,
   findArtifactByFilename,
   isArtifactFormat,
   listArtifacts,
   readArtifactSource,
   saveArtifact,
+  type Artifact,
+  type ArtifactVersion,
 } from "../artifacts/store.js";
-import { getResult } from "../results/store.js";
+import { getResult, type StoredResult } from "../results/store.js";
 
 export const WRITE_ARTIFACT_TOOL_NAME = "write_artifact_tool";
 export const READ_ARTIFACT_TOOL_NAME = "read_artifact_tool";
@@ -62,6 +65,51 @@ function csvCell(value: unknown): string {
 
 export function rowsToCsv(columns: string[], rows: Record<string, unknown>[]): string {
   return [columns.map(csvCell).join(","), ...rows.map((r) => columns.map((c) => csvCell(r[c])).join(","))].join("\r\n") + "\r\n";
+}
+
+/** A short file stem for a stored result: the table a query reads, else the tool that made it. */
+function resultStem(result: StoredResult): string {
+  const table = result.kind === "table" ? /\bfrom\s+[`"[]?([a-z0-9_$.]+)/i.exec(result.label)?.[1] : undefined;
+  const base = table ?? result.source.replace(/_tool$/, "");
+  // The result id keeps two exports of the same table apart; saving the same result twice reuses its file.
+  return `${base.split(".").pop() || "result"}-${result.id.replace(/^res_/, "")}`;
+}
+
+export class ResultExportError extends Error {
+  constructor(message: string, readonly status: 404 | 413) {
+    super(message);
+  }
+}
+
+/**
+ * Save a stored result (which expires) as a CSV file in the same chat (which doesn't).
+ * Text results become one column. Saving the same result again returns the existing file.
+ */
+export function saveResultAsArtifact(resultId: string, sessionId: string): { artifact: Artifact; version: ArtifactVersion; existing: boolean } {
+  const result = getResult(resultId, sessionId);
+  if (!result) throw new ResultExportError("No such result in this chat; it may have expired.", 404);
+  const content = rowsToCsv(result.columns, result.rows);
+  const size = Buffer.byteLength(content, "utf8");
+  if (size > MAX_ARTIFACT_BYTES) {
+    throw new ResultExportError(
+      `This result is ${formatSize(size)} as CSV, over the ${formatSize(MAX_ARTIFACT_BYTES)} limit for a file. Download it instead.`,
+      413,
+    );
+  }
+  let filename: string;
+  try {
+    filename = artifactFilename(resultStem(result), "csv");
+  } catch {
+    filename = artifactFilename(result.id.replace(/_/g, "-"), "csv");
+  }
+  const existing = findArtifactByFilename(sessionId, filename);
+  if (existing) {
+    const latest = readArtifactSource(existing);
+    if (latest && latest.content === content) return { artifact: existing, version: latest.version, existing: true };
+  }
+  const label = result.label.replace(/\s+/g, " ").trim();
+  const title = label ? (label.length > 120 ? `${label.slice(0, 119)}…` : label) : filename;
+  return { ...saveArtifact({ sessionId, filename, title, format: "csv", content }), existing: false };
 }
 
 function formatSize(bytes: number): string {

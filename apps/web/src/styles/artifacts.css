@@ -125,6 +125,7 @@
 
 .artifact-card-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
@@ -150,26 +151,461 @@
   text-decoration: none;
 }
 
-/* ── Artifact preview sheet (beside the chat) ───────────────────────────── */
+/* ── Artifacts panel ───────────────────────────────────────────────────────────
+   Floating (default): a card over the right of the chat, out of the layout, so opening, closing, loading
+   and list ↔ item never move the chat. Pinned (≥1024px): a column beside the chat; only pinning and
+   unpinning change the chat's width. Phone: a full-screen sheet. The width is fixed in every mode. */
 
 .artifact-sheet {
-  width: min(640px, 45vw);
+  /* A side panel, not a second page: narrow enough to leave the chat its room (tables have Full screen). */
+  --artifacts-panel-width: clamp(320px, 28vw, 400px);
+  position: relative;
+  box-sizing: border-box;
+  width: var(--artifacts-panel-width);
   flex-shrink: 0;
-  height: 100vh;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--main-border);
   background: var(--main-bg);
+  color: var(--main-fg);
+  font-family: var(--font-ui);
+}
+
+.artifact-sheet--pinned {
+  height: 100vh;
+  height: 100dvh;
+  border-left: 1px solid var(--main-border);
+  /* Docking slides the column open (and closing slides it shut, .is-leaving): its width grows from 0 while the
+     contents keep their full width, so they slide in rather than reflow. Quick, so the chat beside it settles fast. */
+  overflow: hidden;
+  animation: artifacts-dock-in 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.artifact-sheet--pinned > * {
+  min-width: calc(var(--artifacts-panel-width) - 1px);
+}
+.artifact-sheet--pinned.is-leaving {
+  animation: artifacts-dock-out 0.14s cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+@keyframes artifacts-dock-in {
+  from { width: 0; }
+  to   { width: var(--artifacts-panel-width); }
+}
+@keyframes artifacts-dock-out {
+  from { width: var(--artifacts-panel-width); }
+  to   { width: 0; border-left-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .artifact-sheet--pinned,
+  .artifact-sheet--pinned.is-leaving { animation: none; }
+}
+
+/* Inset like the app's floating menus, in their colours. Its top sits 8px down; the header row below
+   still ends on the chat header's bottom line, with its title on the chat title's line. */
+.artifact-sheet--floating {
+  --artifacts-float-top: 8px;
+  position: fixed;
+  top: var(--artifacts-float-top);
+  right: 12px;
+  /* Ends 8px above the chat composer (set live by ArtifactsPanel from .input-bar-wrap), so the send button
+     stays uncovered; 12px from the window's foot where there is no composer. */
+  bottom: var(--artifacts-float-bottom, 12px);
+  z-index: 160;
+  max-width: calc(100vw - 24px);
+  overflow: hidden;
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-2xl);
+  background: var(--sidebar-menu-bg);
+  box-shadow: var(--sidebar-menu-shadow);
+  animation: artifacts-panel-in 0.14s ease-out;
+}
+/* Dark menus sit a step above the page: surfaces inside the card follow, so fields and rows still read. */
+:root[data-theme="dark"] .artifact-sheet--floating {
+  --main-bg: var(--sidebar-menu-bg);
+  --main-surface: var(--sidebar-menu-trigger-bg);
+  --main-surface-alt: var(--sidebar-menu-hover);
+}
+
+@keyframes artifacts-panel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .artifact-sheet--floating { animation: none; } }
+
+/* The bar at the top: "Artifacts" and the count on the list, "‹ Artifacts" on an item; pin and ✕ on the right.
+   Pinned it matches .chat-header exactly: 12px padding round 30px controls, a 1px bottom border (55px). */
+.artifacts-panel-header {
+  height: 55px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 12px 20px;
+  border-bottom: 1px solid var(--main-border);
+}
+/* Floating: the card's top (8px) and border (1px) eat into the header, so it is 9px shorter and its content
+   sits 9px less from the top: the bottom border and the title's centre line up with the chat header's. */
+.artifact-sheet--floating .artifacts-panel-header {
+  height: calc(55px - var(--artifacts-float-top) - 1px);
+  padding-top: calc(12px - var(--artifacts-float-top) - 1px);
+}
+
+.artifacts-panel-title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* The chat title's size, so their baselines match. */
+  font-size: 13px;
+  font-weight: 600;
   color: var(--main-fg);
 }
 
-.artifact-sheet-header {
+.artifacts-panel-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The same size and look as the chat header's buttons (.chat-header-db-btn). */
+.artifacts-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.artifacts-icon-btn:hover,
+.artifacts-icon-btn.active { background: var(--main-surface); color: var(--main-fg); }
+.artifacts-icon-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+
+.artifacts-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  margin-left: -10px;
+  padding: 0 10px 0 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--main-fg-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.artifacts-back:hover { background: var(--main-surface); color: var(--main-fg); }
+.artifacts-back:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.artifacts-back--icon { width: 36px; height: 36px; padding: 0; justify-content: center; }
+
+/* ── List ── */
+
+.artifacts-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Space for a scrollbar is kept whether or not the list overflows, so rows never shift sideways. */
+  scrollbar-gutter: stable;
+  padding: 12px 12px 24px;
+}
+
+/* The app's compact search field (.sop-search-input): small, quiet, full width here. */
+.artifacts-search {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 4px;
+  padding: 0 8px;
+  min-height: 28px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-sm);
+  background: var(--main-surface);
+  color: var(--main-fg-faint);
+  transition: border-color 0.15s;
+}
+.artifacts-search:focus-within { border-color: var(--main-fg-faint); }
+.artifacts-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--main-fg);
+  font: inherit;
+  font-size: 12px;
+}
+.artifacts-search input::placeholder { color: var(--main-fg-faint); }
+.artifacts-search input::-webkit-search-cancel-button { display: none; }
+
+/* Small and muted, like the + menu's section headings (.attach-menu-section). */
+.artifacts-section { margin-top: 10px; }
+.artifacts-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 8px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--main-fg-muted);
+}
+.artifacts-section-count {
+  color: var(--main-fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Rows like the sidebar and + menu items: icon, title, muted meta. */
+.artifacts-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
+  transition: background 0.1s;
+}
+.artifacts-row:hover,
+.artifacts-row:focus-within { background: var(--sidebar-menu-hover); }
+
+.artifacts-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--main-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.artifacts-row-main:focus-visible { outline: 2px solid var(--sidebar-menu-focus); outline-offset: -2px; }
+
+/* A plain muted icon, as in the sidebar and menus: no tile, no per-format colour. Aligned with the title. */
+.artifacts-row .artifacts-row-icon {
+  width: 16px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 1px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--main-fg-muted);
+}
+
+.artifacts-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The menus' row text (.sidebar-dropdown-item: 13px, 450). */
+.artifacts-row-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 450;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Result labels are usually the query that made them. */
+.artifacts-row-title--query {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.artifacts-row-meta {
+  display: flex;
+  gap: 0 6px;
+  min-width: 0;
+  color: var(--main-fg-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.artifacts-row-meta > span { flex-shrink: 0; }
+.artifacts-row-meta > .artifacts-row-shrink {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifacts-row-meta > span + span::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--main-fg-faint);
+}
+
+.artifacts-expiry { color: var(--main-fg-faint); }
+
+/* "Save as file" on a result row: shown on hover or focus (always on a touch screen). */
+.artifacts-row-action {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+}
+.artifacts-row:hover .artifacts-row-action,
+.artifacts-row:focus-within .artifacts-row-action,
+.artifacts-row-action:disabled { opacity: 1; }
+.artifacts-row-action:hover { background: var(--main-surface-alt); color: var(--main-fg); }
+.artifacts-row-action:disabled { cursor: progress; color: var(--main-fg-faint); }
+.artifacts-row-action:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -2px; }
+@media (hover: none) { .artifacts-row-action { opacity: 1; } }
+
+
+.artifacts-state {
+  margin: 0;
+  padding: 24px 12px;
+  color: var(--main-fg-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.artifacts-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 32px 32px 64px;
+  text-align: center;
+}
+.artifacts-empty-icon {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-lg);
+  background: var(--main-surface);
+  color: var(--main-fg-muted);
+}
+.artifacts-empty-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--main-fg); }
+.artifacts-empty-text { margin: 0; max-width: 300px; font-size: 13px; line-height: 1.5; color: var(--main-fg-muted); }
+
+/* Confirms "Save as file" (or says why it failed), at the foot of the panel. */
+.artifacts-notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  /* Above the result grid's sticky header and row numbers. */
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-lg);
+  background: var(--sidebar-menu-bg);
+  color: var(--sidebar-menu-fg);
+  box-shadow: var(--shadow-float);
+  font-size: 13px;
+  animation: attach-menu-in 0.12s ease-out;
+}
+.artifacts-notice > svg { flex-shrink: 0; color: var(--main-fg-muted); }
+/* Room to scroll the last rows out from under it. */
+.artifacts-panel:has(.artifacts-notice) .artifacts-list { padding-bottom: 80px; }
+.artifacts-notice--error { border-color: var(--color-danger); }
+.artifacts-notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.artifacts-notice-action {
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-sm);
+  background: var(--main-bg);
+  color: var(--main-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.artifacts-notice-action:hover { border-color: var(--main-fg-faint); }
+.artifacts-notice-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+}
+.artifacts-notice-close:hover { background: var(--main-surface); color: var(--main-fg); }
+.artifacts-notice-action:focus-visible,
+.artifacts-notice-close:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+
+/* ── One item (a file or a result) ── */
+
+.artifact-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-view-head {
+  /* One height for files and results (their titles differ in size), so the body starts at the same line. */
+  min-height: 58px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
   gap: 10px;
-  padding: 16px 16px 12px 20px;
+  padding: 10px 16px 10px 20px;
   border-bottom: 1px solid var(--main-border);
 }
+/* The item's icon, plain like the list's (the message cards keep their tile). */
+.artifact-sheet .artifact-view-head > .artifact-card-icon {
+  width: 16px;
+  height: auto;
+  align-self: flex-start;
+  margin-top: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--main-fg-muted);
+}
+
+.artifact-view-query {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+
+/* Result meta can be long (source, shape, age, expiry): let it wrap rather than cut. */
+/* One line, drawn (empty) before the details load, so the head keeps its height; long meta trims its end. */
+.artifact-view-meta-line { min-height: 1.4em; overflow: hidden; }
+.artifact-view-meta > span:last-child { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .artifact-sheet-heading {
   flex: 1;
@@ -178,7 +614,7 @@
 
 .artifact-sheet-title {
   margin: 0 0 2px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -186,7 +622,11 @@
 }
 
 .artifact-sheet-toolbar {
+  /* Drawn (empty) while the item loads, at the height of a row of buttons. */
+  min-height: 45px;
+  box-sizing: border-box;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 8px 16px 8px 20px;
@@ -194,6 +634,9 @@
 }
 
 .artifact-sheet-version {
+  max-width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
   font: inherit;
   font-size: 12px;
   padding: 4px 8px;
@@ -205,10 +648,27 @@
 
 .artifact-sheet-spacer { flex: 1; }
 
+/* Inside the panel, Copy / Download / Full screen are icon buttons (like the full-screen table's header), so
+   the toolbar stays one row at the panel's width; their labels stay for screen readers and as tooltips. */
+.artifact-sheet .artifact-btn-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.artifact-sheet .artifact-sheet-toolbar .btn:has(> .artifact-btn-label) {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
 .artifact-sheet-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 16px 20px 24px;
 }
 
@@ -216,6 +676,24 @@
   padding: 0;
   overflow: hidden;
 }
+
+/* A result's grid scrolls inside itself, with its search/group/chart toolbar on top. */
+.artifact-sheet-body--grid {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.artifact-sheet-body--grid > .artifact-sheet-state { padding: 16px 20px; }
+.artifact-sheet-body--grid > .artifact-sheet-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px 24px;
+}
+.artifact-sheet-body--grid > .result-data-grid { flex: 1; min-height: 0; }
+/* The panel is narrower than a reply: the grid's controls wrap instead of running off the edge. */
+.artifact-sheet-body--grid .result-data-toolbar { flex-wrap: wrap; row-gap: 6px; }
 
 .artifact-sheet-frame {
   display: block;
@@ -253,12 +731,45 @@
   background: var(--main-surface);
 }
 
-@media (max-width: 900px) {
-  .artifact-sheet {
+/* A tablet: over the chat on the right. Below modals (200) such as chat search. */
+/* Phone width: a full-screen sheet, like the AI Editor (no pin); ‹ goes back to the list, then closes. */
+@media (max-width: 767px) {
+  .artifact-sheet,
+  .artifact-sheet--floating {
     position: fixed;
-    inset: 0 0 0 auto;
-    width: min(100vw, 560px);
-    z-index: 400;
-    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08);
+    inset: 0;
+    z-index: 160;
+    width: auto;
+    max-width: none;
+    height: auto;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--main-bg);
+    animation: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
+  /* A full-screen sheet is the page, not a menu over it: the page's own surfaces. */
+  :root[data-theme="dark"] .artifact-sheet--floating {
+    --main-bg: inherit;
+    --main-surface: inherit;
+    --main-surface-alt: inherit;
+  }
+  .artifacts-panel-header,
+  .artifact-sheet--floating .artifacts-panel-header { height: 52px; padding: 8px 10px 8px 16px; gap: 6px; }
+  /* The phone chat title's size. */
+  .artifacts-panel-title { font-size: 14px; }
+  .artifacts-panel-header .artifacts-back--icon { margin-left: -8px; }
+  .artifacts-back { height: 36px; font-size: 14px; }
+  .artifacts-list { padding: 10px 8px calc(24px + env(safe-area-inset-bottom)); }
+  .artifacts-search { margin: 0 8px 6px; min-height: 40px; }
+  .artifacts-row-main { min-height: 52px; padding: 8px; }
+  .artifacts-row-action { width: 36px; height: 36px; }
+  .artifact-view-head { padding: 12px 16px; }
+  .artifact-sheet-toolbar { padding: 8px 16px; }
+  .artifact-sheet-body { padding: 16px 16px 24px; }
+  .artifact-sheet-body--frame,
+  .artifact-sheet-body--grid { padding: 0; }
+  .artifact-sheet-body--grid > .artifact-sheet-pre { padding: 16px; }
+  .artifact-sheet-md table { display: block; overflow-x: auto; }
 }

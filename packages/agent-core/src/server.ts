@@ -42,7 +42,8 @@ import type { LlmUsageEvent, ToolUsageEvent } from "./usage/store.js";
 import { readPricing, upsertPricing, removePricing, estimateCost } from "./usage/pricing.js";
 import type { PriceInput } from "./usage/pricing.js";
 import { deleteResultsForSession, getResult, listResults } from "./results/store.js";
-import { deleteArtifactsForSession, getArtifact, listArtifacts, readArtifactSource, type ArtifactFormat } from "./artifacts/store.js";
+import { ArtifactError, deleteArtifactsForSession, getArtifact, listArtifacts, readArtifactSource, type ArtifactFormat } from "./artifacts/store.js";
+import { ResultExportError, saveResultAsArtifact } from "./tools/artifacts.js";
 import { markdownToDocx } from "./artifacts/docx.js";
 import { getLinkPreview, LinkPreviewError } from "./link-preview/preview.js";
 import { markSessionDeleted } from "./session/lifecycle.js";
@@ -1184,6 +1185,23 @@ app.get("/result/:id", (c) => {
   const result = getResult(c.req.param("id"), sessionId);
   if (!result) return c.json({ error: "Result not found or expired" }, 404);
   return c.json(result);
+});
+
+// Keep a result (which expires) as a CSV file in the same chat. JSON only, so another site can't post it without CORS.
+app.post("/result/:id/save", (c) => {
+  if (!(c.req.header("content-type") ?? "").toLowerCase().startsWith("application/json")) {
+    return c.json({ error: "Send application/json." }, 415);
+  }
+  const sessionId = c.req.query("session_id");
+  if (!sessionId) return c.json({ error: "session_id is required" }, 400);
+  try {
+    const saved = saveResultAsArtifact(c.req.param("id"), sessionId);
+    return c.json(saved, saved.existing ? 200 : 201);
+  } catch (err) {
+    if (err instanceof ResultExportError) return c.json({ error: err.message }, err.status);
+    if (err instanceof ArtifactError) return c.json({ error: err.message }, 400);
+    throw err;
+  }
 });
 
 // ---------------------------------------------------------------------------

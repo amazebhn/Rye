@@ -26,8 +26,6 @@ import {
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 import type { ChatFolder, ChatRecord } from "../../utils/types";
-import { useSops } from "../../contexts/SopContext";
-import { useMemories } from "../../contexts/MemoryContext";
 import { useAgents } from "../../contexts/AgentContext";
 import AgentAvatar from "../agents/AgentAvatar";
 import AgentHoverCard from "../agents/AgentHoverCard";
@@ -285,9 +283,8 @@ export default function Sidebar({
   onOpenSettings,
   drawer,
 }: Props) {
-  const { sops } = useSops();
-  const { memories } = useMemories();
-  const { agents, agentById } = useAgents();
+  // The nav items carry no counts (the user's call), so the sidebar doesn't load SOPs or memories.
+  const { agentById } = useAgents();
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -473,6 +470,8 @@ export default function Sidebar({
   function renderChat(chat: ChatRecord) {
     const isActive = chat.id === activeChatId;
     const isRunning = runningChatIds.has(chat.id);
+    // The agent asked a question or needs an approval and is waiting on the user.
+    const isWaiting = Boolean(chat.pendingPrompt) && !isRunning;
     const menuOpen = openMenuId === chat.id;
     const currentFolderId = chat.folderId && folders.some((f) => f.id === chat.folderId) ? chat.folderId : undefined;
     const chatAgent = chat.agentId ? agentById.get(chat.agentId) : undefined;
@@ -490,17 +489,19 @@ export default function Sidebar({
         onDragEnd={() => setDropTarget(null)}
       >
         {chatAgent && (
-          <span style={{ marginRight: 7, display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
+          <span style={{ marginRight: 8, display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
             <AgentHoverCard agent={chatAgent} placement="right">
               <AgentAvatar agent={chatAgent} size="xs" hideTooltip />
             </AgentHoverCard>
           </span>
         )}
         <span className="sidebar-item-title">{chatAgent ? chatAgent.name : chat.title}</span>
-        {(isRunning || chat.unread) && (
+        {(isRunning || chat.unread || isWaiting) && (
           <span className="sidebar-item-indicators">
             {isRunning && <WorkingSpinner />}
-            {chat.unread && <span className="sidebar-unread" role="img" aria-label="Unread" />}
+            {isWaiting
+              ? <span className="sidebar-unread sidebar-waiting" role="img" aria-label="Waiting for you" title="Waiting for you" />
+              : chat.unread && <span className="sidebar-unread" role="img" aria-label="Unread" />}
           </span>
         )}
         <div
@@ -682,7 +683,6 @@ export default function Sidebar({
         >
           <Bot size={13} />
           <span>Agents</span>
-          {agents !== null && <span className="sidebar-sops-count">{agents.length}</span>}
         </button>
 
         <button className="sidebar-nav-item" disabled title="Coming soon">
@@ -696,7 +696,6 @@ export default function Sidebar({
         >
           <BookOpen size={13} />
           <span>SOPs</span>
-          {sops !== null && <span className="sidebar-sops-count">{sops.length}</span>}
         </button>
 
         <button
@@ -705,7 +704,6 @@ export default function Sidebar({
         >
           <Brain size={13} />
           <span>Memory</span>
-          {memories !== null && <span className="sidebar-sops-count">{memories.length}</span>}
         </button>
 
         <button

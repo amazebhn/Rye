@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { Table2 } from "lucide-react";
+import { PanelRight, Table2 } from "lucide-react";
 import ResultDataGrid from "./ResultDataGrid";
 import TableFrame from "../shared/TableFrame";
+import { useArtifactsPanel } from "../artifacts/ArtifactsPanelContext";
 
-interface StoredResult {
+export interface StoredResult {
   id: string;
   createdAt: number;
   source: string;
@@ -21,7 +22,7 @@ function cell(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
-function toCsv(result: StoredResult): string {
+export function toCsv(result: StoredResult): string {
   const escape = (v: unknown) => {
     const value = cell(v);
     const safeValue = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
@@ -32,7 +33,7 @@ function toCsv(result: StoredResult): string {
   return [header, ...body].join("\n");
 }
 
-function downloadText(contents: string, filename: string, type: string) {
+export function downloadText(contents: string, filename: string, type: string) {
   const blob = new Blob([contents], { type });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -69,7 +70,7 @@ function ResultContent({ result, rows, fullscreen = false }: {
   );
 }
 
-function FullscreenResultContent({ result }: { result: StoredResult }) {
+export function FullscreenResultContent({ result }: { result: StoredResult }) {
   const [visible, setVisible] = useState(FULLSCREEN_PAGE_SIZE);
 
   if (result.kind === "table") {
@@ -106,6 +107,7 @@ export default function ResultTable({ resultId, sessionId, openFullscreen = fals
   const [result, setResult] = useState<StoredResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState(PAGE_SIZE);
+  const panel = useArtifactsPanel();
 
   useEffect(() => {
     let cancelled = false;
@@ -167,6 +169,17 @@ export default function ResultTable({ resultId, sessionId, openFullscreen = fals
             {result.rows.length === 1 ? "" : "s"}
           </span>
           <code className="result-table-label" title={result.label}>{result.label}</code>
+          {panel && !openFullscreen && (
+            <button
+              type="button"
+              className="result-table-open"
+              onClick={() => panel.openResult(result.id)}
+              title="Show in Artifacts"
+              aria-label="Show in Artifacts"
+            >
+              <PanelRight size={13} aria-hidden="true" />
+            </button>
+          )}
         </div>
 
         <ResultContent result={result} rows={rows} />

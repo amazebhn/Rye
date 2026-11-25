@@ -12,8 +12,16 @@ import { join } from "node:path";
 import { DATA_DIR } from "../config.js";
 import { isSessionDeleted } from "../session/lifecycle.js";
 
-const RESULTS_DIR = join(DATA_DIR, "results");
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+let RESULTS_DIR = join(DATA_DIR, "results");
+
+/** Tests point the store at a temp dir (DATA_DIR is fixed once config loads). */
+export function setResultsRoot(dir: string): void {
+  RESULTS_DIR = dir;
+  summaryCache.clear();
+}
+
+export const RESULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RETENTION_MS = RESULT_RETENTION_MS;
 const MAX_RESULTS = 200;
 
 /** Results at or below this size stay inline — a reference would cost more than it saves. */
@@ -41,6 +49,53 @@ export interface StoredResultSummary {
   kind: "table" | "text";
   columns: string[];
   rowCount: number;
+  /** When retention pruning removes it (it can go sooner if MAX_RESULTS newer ones arrive). */
+  expiresAt: number;
+}
+
+/**
+ * Parsed summaries by file, so listing a chat's results doesn't re-read every
+ * stored payload each time. Result files are written once and never changed,
+ * so mtime + size identify a version.
+ */
+const summaryCache = new Map<string, { mtimeMs: number; size: number; sessionId?: string; summary: StoredResultSummary | null }>();
+
+function readSummary(file: string): { sessionId?: string; summary: StoredResultSummary | null } {
+  const path = join(RESULTS_DIR, file);
+  const stat = statSync(path);
+  const cached = summaryCache.get(path);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached;
+  let entry: { sessionId?: string; summary: StoredResultSummary | null };
+  try {
+    const result = JSON.parse(readFileSync(path, "utf8")) as Partial<StoredResult>;
+    const valid =
+      typeof result.id === "string" &&
+      typeof result.createdAt === "number" &&
+      typeof result.source === "string" &&
+      typeof result.label === "string" &&
+      (result.kind === "table" || result.kind === "text") &&
+      Array.isArray(result.columns) &&
+      Array.isArray(result.rows);
+    entry = {
+      sessionId: typeof result.sessionId === "string" ? result.sessionId : undefined,
+      summary: valid
+        ? {
+            id: result.id!,
+            createdAt: result.createdAt!,
+            source: result.source!,
+            label: result.label!,
+            kind: result.kind!,
+            columns: result.columns!.filter((column): column is string => typeof column === "string"),
+            rowCount: result.rows!.length,
+            expiresAt: stat.mtimeMs + RETENTION_MS,
+          }
+        : null,
+    };
+  } catch {
+    entry = { summary: null };
+  }
+  summaryCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, ...entry });
+  return entry;
 }
 
 function ensureDir() {
@@ -109,30 +164,14 @@ export function listResults(sessionId: string): StoredResultSummary[] {
   try {
     ensureDir();
     prune();
-    return readdirSync(RESULTS_DIR)
-      .filter((file) => file.endsWith(".json"))
+    const files = readdirSync(RESULTS_DIR).filter((file) => file.endsWith(".json"));
+    const present = new Set(files.map((file) => join(RESULTS_DIR, file)));
+    for (const path of summaryCache.keys()) if (!present.has(path)) summaryCache.delete(path);
+    return files
       .map((file): StoredResultSummary | null => {
         try {
-          const result = JSON.parse(readFileSync(join(RESULTS_DIR, file), "utf8")) as Partial<StoredResult>;
-          if (
-            typeof result.id !== "string" ||
-            typeof result.createdAt !== "number" ||
-            result.sessionId !== sessionId ||
-            typeof result.source !== "string" ||
-            typeof result.label !== "string" ||
-            (result.kind !== "table" && result.kind !== "text") ||
-            !Array.isArray(result.columns) ||
-            !Array.isArray(result.rows)
-          ) return null;
-          return {
-            id: result.id,
-            createdAt: result.createdAt,
-            source: result.source,
-            label: result.label,
-            kind: result.kind,
-            columns: result.columns.filter((column): column is string => typeof column === "string"),
-            rowCount: result.rows.length,
-          };
+          const { sessionId: owner, summary } = readSummary(file);
+          return owner === sessionId ? summary : null;
         } catch {
           return null;
         }

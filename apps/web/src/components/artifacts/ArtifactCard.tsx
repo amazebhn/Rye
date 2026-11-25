@@ -76,7 +76,8 @@ export function CopyArtifactButton({ id, sessionId, version, format }: { id: str
       }
     >
       {state === "copied" ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-      {label}
+      {/* Shown on message cards; read by screen readers only inside the Artifacts panel (icon buttons there). */}
+      <span className="artifact-btn-label">{label}</span>
     </button>
   );
 }

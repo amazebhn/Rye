@@ -11,6 +11,7 @@ import McpServersSection from "./McpServersSection";
 import SettingsListHeader, { type SettingsListView } from "./SettingsListHeader";
 import ThemeSetting from "./ThemeSetting";
 import TableSetting from "./TableSetting";
+import NotificationsSetting from "./NotificationsSetting";
 import { saveUserName, useUserProfile } from "../../utils/profile";
 import type { SettingsPageKey } from "../../utils/routes";
 import ToolsSection, { type ToolFocus } from "./ToolsSection";
@@ -103,7 +104,7 @@ type SaveStatus = "idle" | "saving" | "saved";
 /**
  * The pages of Settings, in the order listed in its side navigation. Each is a page of its own
  * because several of them (skills, MCP servers) grow long. To add one: an entry here and a branch
- * in `SettingsPage` below.
+ * in `SettingsPage` below (a list or table page wraps itself in `settings-body settings-body--wide`).
  */
 const PAGES: { key: SettingsTab; name: string; icon: LucideIcon; soon?: boolean }[] = [
   { key: "general", name: "General", icon: SlidersHorizontal },
@@ -203,20 +204,20 @@ function SettingsPage({
 }) {
   switch (tab) {
     case "tools":
-      return <div className="settings-body"><ToolsSection focus={focusTool} /></div>;
+      return <div className="settings-body settings-body--wide"><ToolsSection focus={focusTool} /></div>;
     case "models":
       return <ModelsPage key={reloadKey} onStatus={onStatus} />;
     case "agents":
       return <div className="settings-body"><AgentsSection /></div>;
     case "skills":
-      return <div className="settings-body"><SkillPanel embedded /></div>;
+      return <div className="settings-body settings-body--wide"><SkillPanel embedded /></div>;
     case "mcp":
-      return <div className="settings-body"><McpServersSection /></div>;
+      return <div className="settings-body settings-body--wide"><McpServersSection /></div>;
     case "search":
       return <div className="settings-body"><RetrievalSection /></div>;
     case "usage":
       return (
-        <div className="settings-body">
+        <div className="settings-body settings-body--wide">
           <React.Suspense
             fallback={
               <section className="settings-section" aria-labelledby="settings-usage-title">
@@ -233,7 +234,7 @@ function SettingsPage({
       );
     case "integrations":
       return (
-        <div className="settings-body"><IntegrationsSection /></div>
+        <div className="settings-body settings-body--wide"><IntegrationsSection /></div>
       );
     default:
       return (
@@ -246,6 +247,7 @@ function SettingsPage({
             <ThemeSetting />
             <TableSetting />
           </section>
+          <NotificationsSetting />
           <FoldersSection {...folderProps} />
         </div>
       );

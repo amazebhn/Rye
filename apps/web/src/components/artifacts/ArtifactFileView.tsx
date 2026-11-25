@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Download, X } from "lucide-react";
+import { Download } from "lucide-react";
 import type { Artifact } from "../../utils/types";
 import CodeBlock from "../chat/CodeBlock";
 import { ChartSessionContext } from "../chat/ChartBlock";
@@ -43,7 +43,8 @@ function CsvPreview({ text }: { text: string }) {
   const shown = body.slice(0, MAX_CSV_ROWS);
   return (
     <>
-      <div className="artifact-sheet-table">
+      {/* md-body: drawn like a table in a reply or a Markdown file. */}
+      <div className="artifact-sheet-table md-body">
         <table className="md-table-grid">
           <thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
           <tbody>
@@ -85,24 +86,14 @@ interface Props {
   id: string;
   sessionId: string;
   version?: number;
-  onClose: () => void;
 }
 
-// Side panel preview of a file the agent wrote, with version history.
-export default function ArtifactSheet({ id, sessionId, version: initialVersion, onClose }: Props) {
+/** A file the agent wrote, in the Artifacts panel: its name, version history, copy/download and a preview. */
+export default function ArtifactFileView({ id, sessionId, version: initialVersion }: Props) {
   const [meta, setMeta] = useState<Artifact | null>(null);
   const [version, setVersion] = useState<number | undefined>(initialVersion);
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => { closeRef.current?.focus(); }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,25 +121,24 @@ export default function ArtifactSheet({ id, sessionId, version: initialVersion, 
   const current = meta?.versions.find((v) => v.version === version);
 
   return (
-    <aside className="artifact-sheet" aria-label={meta ? `Preview of ${meta.filename}` : "File preview"}>
-      <header className="artifact-sheet-header">
-        {meta && <span className={`artifact-card-icon artifact-card-icon--${meta.format}`}><ArtifactIcon format={meta.format} /></span>}
+    <div className="artifact-view">
+      <div className="artifact-view-head">
+        <span className={`artifact-card-icon${meta ? ` artifact-card-icon--${meta.format}` : ""}`}>
+          {meta && <ArtifactIcon format={meta.format} />}
+        </span>
         <div className="artifact-sheet-heading">
-          <h3 className="artifact-sheet-title">{meta?.title ?? "File"}</h3>
-          {meta && (
-            <span className="artifact-card-meta">
-              <span>{meta.filename}</span>
-              {current && <span>{formatBytes(current.size)}</span>}
-              {meta.format === "docx" && <span>Downloads as Word</span>}
-            </span>
-          )}
+          <h3 className="artifact-sheet-title" title={meta?.title}>{meta?.title ?? "File"}</h3>
+          {/* Always drawn (empty while loading), so the preview below doesn't move when the details arrive. */}
+          <span className="artifact-card-meta artifact-view-meta-line">
+            {meta && meta.filename !== meta.title && <span className="artifact-card-filename">{meta.filename}</span>}
+            {current && <span>{formatBytes(current.size)}</span>}
+            {meta?.format === "docx" && <span>Downloads as Word</span>}
+          </span>
         </div>
-        <button ref={closeRef} type="button" className="modal-close" onClick={onClose} title="Close" aria-label="Close preview">
-          <X size={16} />
-        </button>
-      </header>
+      </div>
+      <div className="artifact-sheet-toolbar">
       {meta && version !== undefined && (
-        <div className="artifact-sheet-toolbar">
+        <>
           {meta.versions.length > 1 && (
             <select
               className="artifact-sheet-version"
@@ -158,7 +148,7 @@ export default function ArtifactSheet({ id, sessionId, version: initialVersion, 
             >
               {[...meta.versions].reverse().map((v, i) => (
                 <option key={v.version} value={v.version}>
-                  v{v.version}{i === 0 ? " (latest)" : ""} · {new Date(v.createdAt).toLocaleString()}
+                  v{v.version}{i === 0 ? " (latest)" : ""} · {new Date(v.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                 </option>
               ))}
             </select>
@@ -166,12 +156,13 @@ export default function ArtifactSheet({ id, sessionId, version: initialVersion, 
           <span className="artifact-sheet-spacer" />
           {meta.format === "html" && <OpenInBrowserLink id={id} sessionId={sessionId} version={version} />}
           <CopyArtifactButton id={id} sessionId={sessionId} version={version} format={meta.format} />
-          <a className="btn btn--sm btn--ghost" href={artifactUrl(id, sessionId, "/download", version)} download>
+          <a className="btn btn--sm btn--ghost" href={artifactUrl(id, sessionId, "/download", version)} download title="Download">
             <Download size={14} aria-hidden="true" />
-            Download
+            <span className="artifact-btn-label">Download</span>
           </a>
-        </div>
+        </>
       )}
+      </div>
       <div className={`artifact-sheet-body${meta?.format === "html" && !error ? " artifact-sheet-body--frame" : ""}`}>
         {error ? (
           <p className="artifact-sheet-state">{error}</p>
@@ -192,6 +183,6 @@ export default function ArtifactSheet({ id, sessionId, version: initialVersion, 
           </ChartSessionContext.Provider>
         )}
       </div>
-    </aside>
+    </div>
   );
 }

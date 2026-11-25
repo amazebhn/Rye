@@ -4,6 +4,9 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 type Cell = React.ReactElement<{ children?: React.ReactNode; style?: React.CSSProperties; className?: string }>;
 type Row = React.ReactElement<{ children?: React.ReactNode }>;
 
+/** A column with any cell longer than this is "long" text (it may wrap, at a readable minimum width). */
+const LONG_CELL_CHARS = 40;
+
 const elements = <T extends React.ReactElement>(node: React.ReactNode): T[] =>
   React.Children.toArray(node).filter((child): child is T => isValidElement(child));
 
@@ -92,7 +95,13 @@ export default function MarkdownTable({ children, tableRef }: Props) {
     setSort((current) =>
       current?.column !== column ? { column, direction: "asc" } : current.direction === "asc" ? { column, direction: "desc" } : null,
     );
+  // Column widths in a narrow chat (a phone, or beside the pinned Artifacts panel): short values (ids, regions,
+  // numbers) stay on one line and long text keeps a readable minimum width (chat.css .is-short / .is-long), so the
+  // table scrolls sideways in its frame instead of squeezing into tall, word-per-line rows.
+  const longColumn = headCells.map((_, column) => rows.some((row) => (row.text[column]?.trim().length ?? 0) > LONG_CELL_CHARS));
   const align = (cell: Cell, column: number) => (numeric[column] && !cell.props.style?.textAlign ? "is-num" : undefined);
+  const cellClass = (cell: Cell, column: number) =>
+    [align(cell, column), longColumn[column] ? "is-long" : "is-short"].filter(Boolean).join(" ");
 
   return (
     <table ref={tableRef} className="md-table-grid">
@@ -123,7 +132,7 @@ export default function MarkdownTable({ children, tableRef }: Props) {
       <tbody>
         {sorted.map((row) => (
           <tr key={row.index}>
-            {row.cells.map((cell, column) => cloneElement(cell, { key: column, className: align(cell, column) }))}
+            {row.cells.map((cell, column) => cloneElement(cell, { key: column, className: cellClass(cell, column) }))}
           </tr>
         ))}
       </tbody>

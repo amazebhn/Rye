@@ -1,17 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Check, Copy, Database, FileOutput, MoreVertical } from "lucide-react";
-import StoredResultsPicker from "./StoredResultsPicker";
+import { Check, Copy, FileOutput, Layers, MoreVertical } from "lucide-react";
 import SidebarButton from "../shell/SidebarButton";
-import { useIsMobile } from "../../utils/viewport";
 import AgentAvatar from "../agents/AgentAvatar";
 import AgentHoverCard from "../agents/AgentHoverCard";
 import type { AgentRecord } from "../../utils/types";
 
-function ChatActionsMenu({ sessionId, onHandoff, onOpenResults }: {
+function ChatActionsMenu({ sessionId, onHandoff }: {
   sessionId: string;
   onHandoff?: () => void;
-  /** On a phone the stored results open from this menu instead of their own header button. */
-  onOpenResults?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -68,17 +64,6 @@ function ChatActionsMenu({ sessionId, onHandoff, onOpenResults }: {
       </button>
       {open && (
         <div className="sidebar-dropdown chat-header-dropdown" role="menu">
-          {onOpenResults && (
-            <button
-              type="button"
-              className="sidebar-dropdown-item"
-              role="menuitem"
-              onClick={run(onOpenResults)}
-            >
-              <Database size={17} />
-              <span>Stored results</span>
-            </button>
-          )}
           <button
             type="button"
             className="sidebar-dropdown-item"
@@ -113,7 +98,10 @@ interface Props {
   activeAgent?: AgentRecord;
   displaySessionId: string | undefined;
   contextPct: number | undefined;
-  onOpenResult: (id: string) => void;
+  /** The chat's files and stored results; the Artifacts button shows only when there are some. */
+  artifactCount: number;
+  artifactsOpen: boolean;
+  onToggleArtifacts: () => void;
   onHandoff?: () => void; // absent until the chat has a session
 }
 
@@ -122,16 +110,11 @@ export default function ChatHeader({
   activeAgent,
   displaySessionId,
   contextPct,
-  onOpenResult,
+  artifactCount,
+  artifactsOpen,
+  onToggleArtifacts,
   onHandoff,
 }: Props) {
-  const isMobile = useIsMobile();
-  // On a phone the stored results move into the ⋯ menu, which (like any stored result) needs the chat to have a session.
-  const resultsInMenu = isMobile && !!displaySessionId;
-  const [resultsOpen, setResultsOpen] = useState(false);
-  useEffect(() => {
-    if (!resultsInMenu) setResultsOpen(false);
-  }, [resultsInMenu]);
   const ctxColor =
     contextPct === undefined ? undefined
     : contextPct >= 85 ? "#dc2626"
@@ -153,28 +136,23 @@ export default function ChatHeader({
           <span>{chatTitle ?? "Rye Agent"}</span>
         )}
       </span>
-      {resultsInMenu ? (
-        <StoredResultsPicker
-          sessionId={displaySessionId}
-          onSelect={onOpenResult}
-          controlled={{
-            open: resultsOpen,
-            onOpenChange: (open) => {
-              setResultsOpen(open);
-              if (!open) document.querySelector<HTMLButtonElement>(".chat-header-menu > .chat-header-db-btn")?.focus();
-            },
-          }}
-        />
-      ) : isMobile ? null : (
-        <StoredResultsPicker sessionId={displaySessionId} onSelect={onOpenResult} />
-      )}
+      {/* Its slot is kept while the chat has nothing yet (hidden, not removed), so it appears without moving anything. */}
       {displaySessionId && (
-        <ChatActionsMenu
-          sessionId={displaySessionId}
-          onHandoff={onHandoff}
-          onOpenResults={resultsInMenu ? () => setResultsOpen(true) : undefined}
-        />
+        <button
+          type="button"
+          className={`chat-header-db-btn chat-header-artifacts-btn${artifactsOpen ? " active" : ""}${artifactCount > 0 || artifactsOpen ? "" : " is-empty"}`}
+          onClick={onToggleArtifacts}
+          title={artifactsOpen ? "Hide this chat’s files and results" : "This chat’s files and results"}
+          aria-label="Artifacts"
+          aria-expanded={artifactsOpen}
+          aria-controls={artifactsOpen ? "artifacts-panel" : undefined}
+          aria-hidden={artifactCount > 0 || artifactsOpen ? undefined : true}
+          tabIndex={artifactCount > 0 || artifactsOpen ? undefined : -1}
+        >
+          <Layers size={16} aria-hidden="true" />
+        </button>
       )}
+      {displaySessionId && <ChatActionsMenu sessionId={displaySessionId} onHandoff={onHandoff} />}
       {contextPct !== undefined && (
         <span className="chat-header-session" style={{ color: ctxColor, marginLeft: 4 }} title="Context window usage">
           ctx {contextPct}%

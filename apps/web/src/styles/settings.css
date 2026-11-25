@@ -304,11 +304,18 @@ label.settings-task-text { cursor: pointer; }
   font-size: 12px;
   font-weight: 400;
 }
-/* The page starts at the left, beside the list, not centred in the leftover width. */
 /* The scrollbar's width is kept free on every page, so a page long enough to scroll is no narrower than a short one. */
-.settings-page { min-width: 0; padding: 24px 32px; scrollbar-gutter: stable; }
-.settings-page > .settings-body { margin: 0; }
-.settings-page > .settings-error { margin-left: 0; margin-right: 0; }
+/* Every page sits in one frame (--settings-frame wide) centred in the space beside the list, and starts at
+   the frame's left edge, so no page's left edge moves when switching. List pages (Skills, MCP servers,
+   Tools, Usage, Integrations: .settings-body--wide) fill the frame; form pages keep a shorter measure. */
+.settings-page { --settings-frame: 1000px; min-width: 0; padding: 24px 32px; scrollbar-gutter: stable; }
+.settings-page > .settings-body,
+.settings-page > .settings-error {
+  max-width: 840px;
+  margin-left: max(0px, calc((100% - var(--settings-frame)) / 2));
+  margin-right: 0;
+}
+.settings-page > .settings-body--wide { max-width: var(--settings-frame); }
 /* Stands in for the tier cards while Models loads, at about their height. */
 .settings-loading { min-height: 138px; display: flex; align-items: center; justify-content: center; }
 
@@ -403,7 +410,34 @@ label.settings-task-text { cursor: pointer; }
 .usage-refresh { width: 30px; height: 30px; padding: 0; color: var(--main-fg-muted); }
 .usage-refresh:hover { background: var(--main-surface); color: var(--main-fg); }
 .usage-refresh:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
-.usage-pricing { scroll-margin-top: 16px; }
+/* Model pricing on the page: a summary card (count of prices, models without one) that opens PricingDialog. */
+.usage-pricing-summary-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 16px; }
+.usage-pricing-summary-row + .usage-pricing-summary-row { border-top: 1px solid var(--main-border); }
+.usage-pricing-summary-row > .btn { flex-shrink: 0; }
+.usage-pricing-summary-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--main-fg);
+}
+.usage-pricing-summary-sub { font-size: 12.5px; font-weight: 400; color: var(--main-fg-muted); }
+.usage-pricing-missing { background: var(--main-warning-bg); }
+.usage-pricing-missing > svg { flex-shrink: 0; color: var(--main-warning); }
+.usage-pricing-missing > .usage-pricing-summary-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 400; }
+/* The pricing dialog (PricingDialog, modal--wide). Row buttons stay row-sized, not the modal's 36px footer size. */
+.usage-pricing-dialog { display: flex; flex-direction: column; gap: 14px; }
+.usage-pricing-dialog > .settings-error { max-width: none; margin: 0; }
+.usage-pricing-modal .usage-price-row { grid-template-columns: minmax(0, 1fr) 120px 120px 72px; }
+.usage-pricing-modal .usage-price-row .btn { height: 30px; padding: 0 12px; border-radius: var(--radius-md); font-size: 12.5px; }
+/* The modal's field padding would put the value under the "$". */
+.usage-pricing-modal .usage-price-input .form-input { padding-left: 22px; padding-right: 8px; }
+.usage-price-row[hidden] { display: none; }
+/* Styled as the list pages' search (.settings-list-search), but not a flex item of a toolbar row. */
+.usage-pricing-dialog > .usage-price-filter { flex: none; width: 260px; max-width: 100%; }
 .usage-link {
   padding: 0;
   border: 0;
@@ -464,8 +498,12 @@ label.settings-task-text { cursor: pointer; }
 .usage-price-new { background: var(--main-surface); }
 /* Phone width (MOBILE_BREAKPOINT): the model on a line of its own, the two prices and the action under it. */
 @media (max-width: 767px) {
-  .usage-price-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; row-gap: 8px; padding: 12px; }
+  .usage-price-row,
+  .usage-pricing-modal .usage-price-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; row-gap: 8px; padding: 12px; }
   .usage-price-row > :first-child { grid-column: 1 / -1; }
+  .usage-pricing-dialog > .usage-price-filter { width: 100%; }
+  .usage-price-filter .sop-search-input { height: 36px; font-size: 16px; }
+  .usage-pricing-summary-row { flex-wrap: wrap; padding: 12px; }
   .usage-price-head { display: none; }
   .usage-price-head + .usage-price-row,
   .usage-price-head + .usage-price-empty { border-top: 0; }

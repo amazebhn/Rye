@@ -23,9 +23,12 @@ import MemoryPanel from "./components/memory/MemoryPanel";
 import AgentPanel from "./components/agents/AgentPanel";
 import SettingsPanel, { type SettingsTab } from "./components/settings/SettingsPanel";
 import { ChatExamples, ChatHero } from "./components/chat/ChatHome";
-import ResultTable from "./components/results/ResultTable";
-import ArtifactSheet from "./components/artifacts/ArtifactSheet";
+import ArtifactsPanel, { readArtifactsPinned, rememberArtifactsPinned, useCanPinArtifacts, type ArtifactsView } from "./components/artifacts/ArtifactsPanel";
+import { ArtifactsPanelContext, type ArtifactsPanelControl } from "./components/artifacts/ArtifactsPanelContext";
+import { useChatArtifacts } from "./components/artifacts/useChatArtifacts";
 import FolderSuggestionToast from "./components/shell/FolderSuggestionToast";
+import NotificationNudge from "./components/shell/NotificationNudge";
+import { notifyRunEnd, useNotifications } from "./utils/notifications";
 import { useChatFolders } from "./components/shell/useChatFolders";
 import { MAX_ATTACHMENTS, readyRefs, refForServer, refKey, uploadAttachment, type AttachmentRef, type ContextRef, type PendingAttachment } from "./utils/attachments";
 import { PANEL_PATHS, parseAppPath, redirectMovedPath, settingsPath, sopPath, type AppRoute } from "./utils/routes";
@@ -417,9 +420,9 @@ export default function App() {
     action(...args);
     closeDrawer();
   }, [closeDrawer]);
-  const [viewingResult, setViewingResult] = useState<{ id: string; sessionId: string } | null>(null);
-  const [viewingArtifact, setViewingArtifact] = useState<{ id: string; sessionId: string; version: number } | null>(null);
-  const closeArtifact = useCallback(() => setViewingArtifact(null), []);
+  // The Artifacts panel (a chat's files and stored results) and what it shows; it follows the open chat.
+  // sessionId is undefined only while the panel is pinned on a chat without a session (it shows the empty state).
+  const [artifactsPanel, setArtifactsPanel] = useState<{ sessionId: string | undefined; view: ArtifactsView } | null>(null);
   const [activePanel, setActivePanel] = useState<Panel>(() => panelForRoute(routeNow()) ?? "chat");
   // Which empty page shows before a chat has messages: Home ("/", false) or a blank new chat (NEW_CHAT_PATH, true).
   const [blankChat, setBlankChat] = useState(() => window.location.pathname === NEW_CHAT_PATH);
@@ -503,6 +506,74 @@ export default function App() {
     };
   }, [activeChatId, activeNeedsLoad, loadAttempt]);
   const displaySessionId = activeRun ? activeRun.sessionId : activeChat?.sessionId;
+  const chatArtifacts = useChatArtifacts(displaySessionId, loading);
+  const artifactCount = displaySessionId && chatArtifacts.sessionId === displaySessionId
+    ? chatArtifacts.files.length + chatArtifacts.results.length
+    : 0;
+  // Pinned docks the panel beside the chat (wide windows only); the choice is remembered in this browser.
+  const canPinArtifacts = useCanPinArtifacts();
+  const [artifactsPinPref, setArtifactsPinPref] = useState(readArtifactsPinned);
+  const artifactsPinned = artifactsPinPref && canPinArtifacts && !isMobile;
+  const toggleArtifactsPin = useCallback(() => {
+    setArtifactsPinPref((was) => {
+      rememberArtifactsPinned(!was);
+      return !was;
+    });
+  }, []);
+  // A pinned panel slides shut (artifacts.css, .is-leaving) before it unmounts; a floating one just goes.
+  const [artifactsLeaving, setArtifactsLeaving] = useState(false);
+  const artifactsLeaveTimer = useRef<number | null>(null);
+  const dismissArtifacts = useCallback(() => {
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!artifactsPinned || reduced) {
+      setArtifactsPanel(null);
+      return;
+    }
+    if (artifactsLeaveTimer.current !== null) return;
+    setArtifactsLeaving(true);
+    artifactsLeaveTimer.current = window.setTimeout(() => {
+      artifactsLeaveTimer.current = null;
+      setArtifactsLeaving(false);
+      setArtifactsPanel(null);
+    }, 140);
+  }, [artifactsPinned]);
+  useEffect(() => () => {
+    if (artifactsLeaveTimer.current !== null) window.clearTimeout(artifactsLeaveTimer.current);
+  }, []);
+  // The panel follows the open chat. Floating: another chat shows its own list, or the panel closes when that
+  // chat has nothing (checked once its lists arrive), and a new chat closes it. Pinned: it stays docked and shows
+  // whatever the open chat has, even nothing, so the chat beside it never changes width on its own.
+  const artifactsFollowRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!artifactsPanel || artifactsPanel.sessionId === displaySessionId) return;
+    if (artifactsPinned) {
+      setArtifactsPanel({ sessionId: displaySessionId, view: { kind: "list" } });
+      return;
+    }
+    if (!displaySessionId) {
+      setArtifactsPanel(null);
+      return;
+    }
+    artifactsFollowRef.current = displaySessionId;
+    setArtifactsPanel({ sessionId: displaySessionId, view: { kind: "list" } });
+  }, [displaySessionId, artifactsPanel, artifactsPinned]);
+  useEffect(() => {
+    const followed = artifactsFollowRef.current;
+    if (!followed || chatArtifacts.sessionId !== followed) return;
+    artifactsFollowRef.current = null;
+    if (!artifactsPinned && !chatArtifacts.error && chatArtifacts.files.length + chatArtifacts.results.length === 0) {
+      setArtifactsPanel((p) => (p?.sessionId === followed ? null : p));
+    }
+  }, [chatArtifacts.sessionId, chatArtifacts.files, chatArtifacts.results, chatArtifacts.error, artifactsPinned]);
+  const artifactsControl = useMemo<ArtifactsPanelControl | null>(
+    () => (displaySessionId
+      ? {
+          openFile: (id, version) => setArtifactsPanel({ sessionId: displaySessionId, view: { kind: "file", id, version } }),
+          openResult: (id) => setArtifactsPanel({ sessionId: displaySessionId, view: { kind: "result", id } }),
+        }
+      : null),
+    [displaySessionId],
+  );
   const visiblePrompt = activeRun ? activeRun.prompt : (activeChat?.pendingPrompt ?? null);
   const contextPct = activeRun?.contextPct;
   const activeQueue = messageQueue.filter((m) => m.chatId === activeChatId);
@@ -517,6 +588,8 @@ export default function App() {
   // Stable across token updates, so presence is only announced when the set changes.
   const runningKey = [...runningChatIds].sort().join("\n");
   const chatOnScreen = activePanel === "chat" ? activeChatId : undefined;
+  // Desktop notifications and the tab title count skip the chat on screen and clear once it is seen.
+  useNotifications(chatOnScreen);
   const pickerEnvKey =
     (chatOnScreen ? (activeChat?.env ?? activeRun?.env) : undefined) ?? defaultEnv?.key;
 
@@ -757,8 +830,7 @@ export default function App() {
       leaveChatAddress(active);
     }
     const goneSessions = new Set([...goneIds].map((id) => before.get(id)?.sessionId).filter(Boolean));
-    setViewingResult((v) => (v && goneSessions.has(v.sessionId) ? null : v));
-    setViewingArtifact((v) => (v && goneSessions.has(v.sessionId) ? null : v));
+    setArtifactsPanel((p) => (p && goneSessions.has(p.sessionId) ? null : p));
   }, [commitRuns, updateQueue]);
   useSyncRefresh("chats", () => void refreshChats());
 
@@ -968,8 +1040,7 @@ export default function App() {
       if (chatIdFromPath(window.location.pathname) === id) setBlankChat(false);
       leaveChatAddress(id);
     }
-    if (viewingResult?.sessionId === deletedSessionId) setViewingResult(null);
-    if (viewingArtifact?.sessionId === deletedSessionId) setViewingArtifact(null);
+    if (artifactsPanel?.sessionId === deletedSessionId) setArtifactsPanel(null);
     const run = runsRef.current.get(id);
     if (run) {
       run.controller.abort();
@@ -1262,6 +1333,8 @@ export default function App() {
                 void refreshKnowledge();
                 publish({ kind: "changed", topic: "memory" });
               }
+              // A file written or a result stored: the Artifacts count and panel pick it up now, not at run end.
+              if (/\[rye:(artifact|result):/.test(content)) chatArtifacts.refresh();
               updateMessages((prev) => {
                 const updated = [...prev];
                 const last = { ...updated[updated.length - 1] };
@@ -1385,6 +1458,15 @@ export default function App() {
         updateQueue((q) => q.filter((m) => m !== next));
         const baseMessages = streamPaused ? markLastPaused(localMessages) : localMessages;
         void sendMessage(next.text, { chatId, sessionId: currentSessionId, baseMessages, model: next.model }, undefined, undefined, next.attachments, next.references);
+      } else if (!aborted && !deleted) {
+        // Once per run (after any agent hand-offs), from the tab that ran it; a queued follow-up notifies when it ends.
+        void notifyRunEnd({
+          chatId,
+          title: (chatAgentId ? agentById.get(chatAgentId)?.name : undefined) ?? chatsRef.current.find((c) => c.id === chatId)?.title,
+          messages: localMessages,
+          prompt: currentPrompt,
+          startedAt: initial.at(-1)?.meta?.startedAt,
+        });
       }
     }
   }
@@ -1524,8 +1606,12 @@ export default function App() {
           activeAgent={activeChat?.agentId ? agentById.get(activeChat.agentId) : undefined}
           displaySessionId={displaySessionId}
           contextPct={contextPct}
-          onOpenResult={(id) => {
-            if (displaySessionId) setViewingResult({ id, sessionId: displaySessionId });
+          artifactCount={artifactCount}
+          artifactsOpen={!!artifactsPanel && artifactsPanel.sessionId === displaySessionId}
+          onToggleArtifacts={() => {
+            if (!displaySessionId) return;
+            if (artifactsPanel && artifactsPanel.sessionId === displaySessionId) dismissArtifacts();
+            else setArtifactsPanel({ sessionId: displaySessionId, view: { kind: "list" } });
           }}
           onHandoff={displaySessionId ? () => void sendMessage(HANDOFF_PROMPT) : undefined}
         />
@@ -1582,6 +1668,7 @@ export default function App() {
             <ChatHero agent={activeChat?.agentId ? agentById.get(activeChat.agentId) : undefined} />
           </div>
         )}
+        <ArtifactsPanelContext.Provider value={artifactsControl}>
         <MessageList
           messages={displayMessages}
           chatId={activeChatId}
@@ -1590,15 +1677,14 @@ export default function App() {
           loading={loading}
           isViewingInflight={isViewingInflight || remoteRunning}
           onNewChat={startNewChat}
-          onOpenArtifact={(id, version) => {
-            if (displaySessionId) setViewingArtifact({ id, sessionId: displaySessionId, version });
-          }}
+          onOpenArtifact={(id, version) => artifactsControl?.openFile(id, version)}
           onContinue={() => sendMessage("continue", undefined, undefined, "continue")}
           canResubmit={!loading && activeQueue.length === 0}
           onResubmit={resubmitFrom}
           pendingPrompt={visiblePrompt ?? undefined}
           onPromptAnswer={answerPrompt}
         />
+        </ArtifactsPanelContext.Provider>
         </div>
         <MessageInput
           input={input}
@@ -1661,27 +1747,17 @@ export default function App() {
           }}
         />
       )}
-      {viewingArtifact && activePanel === "chat" && viewingArtifact.sessionId === displaySessionId && (
-        <ArtifactSheet
-          key={`${viewingArtifact.id}:${viewingArtifact.version}`}
-          id={viewingArtifact.id}
-          sessionId={viewingArtifact.sessionId}
-          version={viewingArtifact.version}
-          onClose={closeArtifact}
-        />
-      )}
-      {viewingResult && (
-        <ResultTable
-          key={`${viewingResult.sessionId}:${viewingResult.id}`}
-          resultId={viewingResult.id}
-          sessionId={viewingResult.sessionId}
-          openFullscreen
-          onClose={() => {
-            setViewingResult(null);
-            window.requestAnimationFrame(() => {
-              document.querySelector<HTMLButtonElement>(".chat-header-db-btn")?.focus();
-            });
-          }}
+      {artifactsPanel && activePanel === "chat" && artifactsPanel.sessionId === displaySessionId && (
+        <ArtifactsPanel
+          key={artifactsPanel.sessionId ?? "no-session"}
+          sessionId={artifactsPanel.sessionId}
+          data={chatArtifacts}
+          view={artifactsPanel.view}
+          onViewChange={(view) => setArtifactsPanel({ sessionId: artifactsPanel.sessionId, view })}
+          onClose={dismissArtifacts}
+          pinned={artifactsPinned}
+          onTogglePin={canPinArtifacts && !isMobile ? toggleArtifactsPin : undefined}
+          leaving={artifactsLeaving}
         />
       )}
       <FolderSuggestionToast
@@ -1691,6 +1767,7 @@ export default function App() {
         onMove={() => chatFolders.suggestion && chatFolders.resolveSuggestion(chatFolders.suggestion, true)}
         onDismiss={() => chatFolders.suggestion && chatFolders.resolveSuggestion(chatFolders.suggestion, false)}
       />
+      <NotificationNudge />
     </div>
     </SidebarControlContext.Provider>
   );

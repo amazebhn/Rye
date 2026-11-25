@@ -116,6 +116,8 @@
 /* Child combinators throughout: a settled outer Collapse must not unclip or reveal a nested one mid-animation. */
 .collapse > .collapse-inner {
   min-height: 0;
+  /* As wide as the collapse, not as its widest content: a wide table in a tool row scrolls in its own frame. */
+  min-width: 0;
   overflow: hidden;
   opacity: 0;
   transform: translateY(-8px);

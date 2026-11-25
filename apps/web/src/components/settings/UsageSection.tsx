@@ -16,15 +16,24 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AlertCircle, BarChart3, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, BarChart3, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { formatModelName } from "../../utils/modelNames";
 import { useSyncRefresh } from "../../utils/sync";
+import Modal, { ModalCancelButton } from "../shared/Modal";
 
 /**
  * Settings → Usage (/settings/usage): what the agent's model and tool calls cost over a time range
  * (GET /usage/summary), and the model price table that cost is estimated from (GET/PUT /usage/pricing,
- * DELETE /usage/pricing/:model). Loaded lazily by SettingsPanel, so recharts only loads here.
+ * DELETE /usage/pricing/:model). The page shows a one-row summary of the prices; the table itself is
+ * edited in a dialog (`PricingDialog`). Loaded lazily by SettingsPanel, so recharts only loads here.
  */
+
+/** Above this many prices the pricing dialog offers a filter. */
+const PRICE_FILTER_MIN = 10;
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
 
 interface Totals {
   calls: number;
@@ -172,11 +181,9 @@ export default function UsageSection({ onStatus }: { onStatus?: (status: SaveSta
   const [error, setError] = useState<string | null>(null);
   const daysRef = useRef(days);
   daysRef.current = days;
-  const pricingRef = useRef<HTMLElement>(null);
-  const newInputRef = useRef<HTMLInputElement>(null);
-  const [newModel, setNewModel] = useState("");
-  const [newInput, setNewInput] = useState("");
-  const [newOutput, setNewOutput] = useState("");
+  /** The pricing dialog while open, and the model it was opened to add a price for. */
+  const [pricingDialog, setPricingDialog] = useState<{ model?: string } | null>(null);
+  const pricingReturnFocus = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async (range = daysRef.current) => {
     setLoading(true);
@@ -256,27 +263,20 @@ export default function UsageSection({ onStatus }: { onStatus?: (status: SaveSta
     }
   }
 
-  async function addPrice(e: React.FormEvent) {
-    e.preventDefault();
-    const model = newModel.trim();
-    const input = parsePrice(newInput);
-    const output = parsePrice(newOutput);
-    if (!model || input === null || output === null) return;
-    if (await savePrice(model, input, output)) {
-      setNewModel("");
-      setNewInput("");
-      setNewOutput("");
-    }
+  function openPricing(model?: string) {
+    pricingReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setError(null);
+    setPricingDialog({ model });
   }
 
-  function startPriceFor(model: string) {
-    setNewModel(model);
-    pricingRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    window.requestAnimationFrame(() => newInputRef.current?.focus({ preventScroll: true }));
+  function closePricing() {
+    setPricingDialog(null);
+    pricingReturnFocus.current?.focus();
   }
 
-  const canAdd = newModel.trim() !== "" && parsePrice(newInput) !== null && parsePrice(newOutput) !== null;
-  const priceRows = Object.entries(pricing ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const priceCount = Object.keys(pricing ?? {}).length;
+  const missingNames = unpricedModels.slice(0, 3).map(formatModelName).join(", ");
+  const missingMore = unpricedModels.length - 3;
 
   return (
     <>
@@ -285,7 +285,7 @@ export default function UsageSection({ onStatus }: { onStatus?: (status: SaveSta
       <section className="settings-section" aria-labelledby="settings-usage-title">
         <div className="settings-section-head">
           <h3 className="settings-section-title" id="settings-usage-title">Usage</h3>
-          <p className="settings-section-desc">Model calls, tokens and tool use over the last {days} days, with the cost estimated from the prices below.</p>
+          <p className="settings-section-desc">Model calls, tokens and tool use over the last {days} days, with the cost estimated from your model prices.</p>
         </div>
         <div className="usage-toolbar">
           <div className="analytics-range" role="group" aria-label="Time range">
@@ -337,12 +337,8 @@ export default function UsageSection({ onStatus }: { onStatus?: (status: SaveSta
                   {data.totals.pricedCalls === 0
                     ? "No model has a price yet, so cost shows $0."
                     : "Some calls have no price, so cost is understated."}{" "}
-                  <button
-                    type="button"
-                    className="usage-link"
-                    onClick={() => pricingRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-                  >
-                    Set prices in Model pricing
+                  <button type="button" className="usage-link" onClick={() => openPricing(unpricedModels[0])}>
+                    Add prices
                   </button>
                   , or paste a pricing table into a chat and ask the agent to save it.
                 </span>
@@ -402,7 +398,9 @@ export default function UsageSection({ onStatus }: { onStatus?: (status: SaveSta
                     </PieChart>
                   </ResponsiveContainer>
                 ) : (
-                  <p className="settings-placeholder">Set a price for a model below to see the cost breakdown.</p>
+                  <p className="settings-placeholder">
+                    <button type="button" className="usage-link" onClick={() => openPricing(unpricedModels[0])}>Set a price</button> for a model to see the cost breakdown.
+                  </p>
                 )}
               </section>
             </div>
@@ -446,63 +444,56 @@ export default function UsageSection({ onStatus }: { onStatus?: (status: SaveSta
         )}
       </section>
 
-      <section className="settings-section usage-pricing" aria-labelledby="settings-pricing-title" ref={pricingRef}>
+      {/* A summary only: the table itself is edited in PricingDialog, so a long price list doesn't run down the page. */}
+      <section className="settings-section usage-pricing" aria-labelledby="settings-pricing-title">
         <div className="settings-section-head">
           <h3 className="settings-section-title" id="settings-pricing-title">Model pricing</h3>
           <p className="settings-section-desc">
-            US dollars per million tokens. A price also covers longer model ids that start with its name (a dated version).
-            The agent can save these too: paste a provider's pricing page into a chat and ask it to.
+            US dollars per million tokens, used to estimate the cost above. The agent can save these too: paste a
+            provider's pricing page into a chat and ask it to.
           </p>
         </div>
-
-        {unpricedModels.length > 0 && (
-          <div className="usage-unpriced" role="group" aria-label="Models without a price">
-            <span className="usage-unpriced-label">No price in this range:</span>
-            {unpricedModels.map((model) => (
-              <button key={model} type="button" className="usage-unpriced-chip" onClick={() => startPriceFor(model)} title={`Add a price for ${model}`}>
-                <Plus size={12} aria-hidden="true" />
-                <span>{model}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="settings-task-list usage-price-list">
-          <div className="usage-price-row usage-price-head" aria-hidden="true">
-            <span>Model</span>
-            <span>Input / 1M</span>
-            <span>Output / 1M</span>
-            <span />
-          </div>
-          {pricing === null && <p className="settings-placeholder usage-price-empty">Loading prices…</p>}
-          {pricing !== null && priceRows.length === 0 && (
-            <p className="usage-price-empty">No prices yet. Add one below{unpricedModels.length > 0 ? ", or pick a model above" : ""}.</p>
-          )}
-          {priceRows.map(([model, price]) => (
-            <PriceRow key={model} model={model} price={price} onSave={savePrice} onRemove={removePrice} />
-          ))}
-          <form className="usage-price-row usage-price-new" onSubmit={(e) => void addPrice(e)}>
-            <input
-              className="form-input"
-              value={newModel}
-              onChange={(e) => setNewModel(e.target.value)}
-              placeholder="Model id, e.g. claude-sonnet-4-5"
-              aria-label="Model id"
-              list="usage-model-ids"
-              spellCheck={false}
-              autoCapitalize="off"
-            />
-            <datalist id="usage-model-ids">
-              {unpricedModels.map((m) => <option key={m} value={m} />)}
-            </datalist>
-            <PriceInput ref={newInputRef} value={newInput} onChange={setNewInput} label="Input price per million tokens" />
-            <PriceInput value={newOutput} onChange={setNewOutput} label="Output price per million tokens" />
-            <button type="submit" className="btn btn--primary btn--sm usage-price-action" disabled={!canAdd}>
-              <Plus size={13} aria-hidden="true" /> Add
+        <div className="settings-task-list usage-pricing-summary">
+          <div className="usage-pricing-summary-row">
+            <span className="usage-pricing-summary-text">
+              {pricing === null ? "Loading prices…" : priceCount === 0 ? "No prices set yet" : `Prices set for ${plural(priceCount, "model")}`}
+              {pricing !== null && hasData && (
+                <span className="usage-pricing-summary-sub">
+                  {unpricedModels.length === 0
+                    ? "Every model used in this range has a price"
+                    : `${plural(unpricedModels.length, "model")} used in this range ${unpricedModels.length === 1 ? "has" : "have"} no price`}
+                </span>
+              )}
+            </span>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => openPricing()} disabled={pricing === null}>
+              Manage prices
             </button>
-          </form>
+          </div>
+          {unpricedModels.length > 0 && (
+            <div className="usage-pricing-summary-row usage-pricing-missing">
+              <AlertCircle size={14} aria-hidden="true" />
+              <span className="usage-pricing-summary-text" title={unpricedModels.join("\n")}>
+                No price for {missingNames}{missingMore > 0 ? ` and ${missingMore} more` : ""}
+              </span>
+              <button type="button" className="btn btn--primary btn--sm" onClick={() => openPricing(unpricedModels[0])}>
+                <Plus size={13} aria-hidden="true" /> Add prices
+              </button>
+            </div>
+          )}
         </div>
       </section>
+
+      {pricingDialog && (
+        <PricingDialog
+          pricing={pricing}
+          unpricedModels={unpricedModels}
+          startModel={pricingDialog.model}
+          error={error}
+          onSave={savePrice}
+          onRemove={removePrice}
+          onClose={closePricing}
+        />
+      )}
     </>
   );
 }
@@ -529,17 +520,192 @@ const PriceInput = React.forwardRef<HTMLInputElement, { value: string; onChange:
   }
 );
 
+/**
+ * The model price table, in a dialog opened from the Usage page: the models used in this range that
+ * have no price, a filter once there are many prices, a row to add one, and every saved price (edit in
+ * place or remove). Saving goes through the page, which reloads the cost figures behind the dialog.
+ */
+function PricingDialog({
+  pricing,
+  unpricedModels,
+  startModel,
+  error,
+  onSave,
+  onRemove,
+  onClose,
+}: {
+  pricing: PricingTable | null;
+  unpricedModels: string[];
+  /** Fills the add row with this model and puts the cursor in its input price. */
+  startModel?: string;
+  error: string | null;
+  onSave: (model: string, input: number, output: number) => Promise<boolean>;
+  onRemove: (model: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [newModel, setNewModel] = useState(startModel ?? "");
+  const [newInput, setNewInput] = useState("");
+  const [newOutput, setNewOutput] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [dirtyRows, setDirtyRows] = useState<ReadonlySet<string>>(() => new Set());
+  const modelRef = useRef<HTMLInputElement>(null);
+  const newInputRef = useRef<HTMLInputElement>(null);
+
+  // Opened for a model without a price: straight to its input price. Otherwise the model field.
+  useEffect(() => {
+    (startModel ? newInputRef : modelRef).current?.focus();
+  }, [startModel]);
+
+  const onDirtyChange = useCallback((model: string, dirty: boolean) => {
+    setDirtyRows((prev) => {
+      if (prev.has(model) === dirty) return prev;
+      const next = new Set(prev);
+      if (dirty) next.add(model);
+      else next.delete(model);
+      return next;
+    });
+  }, []);
+
+  const priceRows = useMemo(() => Object.entries(pricing ?? {}).sort(([a], [b]) => a.localeCompare(b)), [pricing]);
+  const q = query.trim().toLowerCase();
+  const matches = (model: string) => !q || model.toLowerCase().includes(q) || formatModelName(model).toLowerCase().includes(q);
+  const shownCount = priceRows.filter(([model]) => matches(model)).length;
+  const canAdd = newModel.trim() !== "" && parsePrice(newInput) !== null && parsePrice(newOutput) !== null;
+  const unsaved = newInput.trim() !== "" || newOutput.trim() !== "" || dirtyRows.size > 0;
+
+  function startPriceFor(model: string) {
+    setNewModel(model);
+    newInputRef.current?.focus();
+  }
+
+  async function addPrice(e: React.FormEvent) {
+    e.preventDefault();
+    const model = newModel.trim();
+    const input = parsePrice(newInput);
+    const output = parsePrice(newOutput);
+    if (!model || input === null || output === null || adding) return;
+    setAdding(true);
+    const saved = await onSave(model, input, output);
+    setAdding(false);
+    if (!saved) return;
+    setNewModel("");
+    setNewInput("");
+    setNewOutput("");
+    modelRef.current?.focus();
+  }
+
+  return (
+    <Modal
+      title="Model pricing"
+      description="US dollars per million tokens. A price also covers longer model ids that start with its name (a dated version)."
+      className="modal--wide usage-pricing-modal"
+      onClose={onClose}
+      guardDismiss={unsaved}
+      guardTitle="Discard unsaved prices?"
+      guardMessage="A price you've typed hasn't been saved. If you close now, it will be lost."
+      footer={<ModalCancelButton label="Done" />}
+    >
+      <div className="usage-pricing-dialog">
+        {error && <div className="settings-error" role="alert">{error}</div>}
+
+        {unpricedModels.length > 0 && (
+          <div className="usage-unpriced" role="group" aria-label="Models without a price">
+            <span className="usage-unpriced-label">No price in this range:</span>
+            {unpricedModels.map((model) => (
+              <button key={model} type="button" className="usage-unpriced-chip" onClick={() => startPriceFor(model)} title={`Add a price for ${model}`}>
+                <Plus size={12} aria-hidden="true" />
+                <span>{model}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {priceRows.length > PRICE_FILTER_MIN && (
+          <div className="sop-search-wrap settings-list-search usage-price-filter">
+            <Search size={13} className="sop-search-icon" aria-hidden="true" />
+            <input
+              className="sop-search-input"
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Filter ${priceRows.length} prices…`}
+              aria-label="Filter prices"
+              spellCheck={false}
+              autoCapitalize="off"
+            />
+          </div>
+        )}
+
+        <div className="settings-task-list usage-price-list">
+          <div className="usage-price-row usage-price-head" aria-hidden="true">
+            <span>Model</span>
+            <span>Input / 1M</span>
+            <span>Output / 1M</span>
+            <span />
+          </div>
+          <form className="usage-price-row usage-price-new" onSubmit={(e) => void addPrice(e)}>
+            <input
+              ref={modelRef}
+              className="form-input"
+              value={newModel}
+              onChange={(e) => setNewModel(e.target.value)}
+              placeholder="Model id, e.g. claude-sonnet-4-5"
+              aria-label="Model id"
+              list="usage-model-ids"
+              spellCheck={false}
+              autoCapitalize="off"
+            />
+            <datalist id="usage-model-ids">
+              {unpricedModels.map((m) => <option key={m} value={m} />)}
+            </datalist>
+            <PriceInput ref={newInputRef} value={newInput} onChange={setNewInput} label="Input price per million tokens" />
+            <PriceInput value={newOutput} onChange={setNewOutput} label="Output price per million tokens" />
+            <button type="submit" className="btn btn--primary btn--sm usage-price-action" disabled={!canAdd || adding}>
+              <Plus size={13} aria-hidden="true" /> Add
+            </button>
+          </form>
+          {pricing === null && <p className="settings-placeholder usage-price-empty">Loading prices…</p>}
+          {pricing !== null && priceRows.length === 0 && (
+            <p className="usage-price-empty">No prices yet. Add one above{unpricedModels.length > 0 ? ", or pick a model without a price" : ""}.</p>
+          )}
+          {priceRows.length > 0 && shownCount === 0 && (
+            <p className="usage-price-empty">No prices match “{query.trim()}”.</p>
+          )}
+          {/* Rows filtered out are hidden, not unmounted, so an unsaved edit in one survives the filter. */}
+          {priceRows.map(([model, price]) => (
+            <PriceRow
+              key={model}
+              model={model}
+              price={price}
+              hidden={!matches(model)}
+              onSave={onSave}
+              onRemove={onRemove}
+              onDirtyChange={onDirtyChange}
+            />
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /** One saved price: edit the two numbers in place (Save, or Enter), or remove the row. */
 function PriceRow({
   model,
   price,
+  hidden = false,
   onSave,
   onRemove,
+  onDirtyChange,
 }: {
   model: string;
   price: ModelPrice;
+  hidden?: boolean;
   onSave: (model: string, input: number, output: number) => Promise<boolean>;
   onRemove: (model: string) => Promise<void>;
+  /** Told whether this row holds an edit that isn't saved, so closing can ask first. */
+  onDirtyChange?: (model: string, dirty: boolean) => void;
 }) {
   const [input, setInput] = useState(String(price.input_per_mtok));
   const [output, setOutput] = useState(String(price.output_per_mtok));
@@ -553,6 +719,8 @@ function PriceRow({
   const outputValue = parsePrice(output);
   const valid = inputValue !== null && outputValue !== null;
   const dirty = inputValue !== price.input_per_mtok || outputValue !== price.output_per_mtok;
+  useEffect(() => { onDirtyChange?.(model, dirty); }, [model, dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(model, false), [model, onDirtyChange]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -563,7 +731,7 @@ function PriceRow({
   }
 
   return (
-    <form className="usage-price-row" onSubmit={(e) => void save(e)}>
+    <form className="usage-price-row" hidden={hidden} onSubmit={(e) => void save(e)}>
       <span className="usage-price-model" title={price.source ? `${model} · from ${price.source}` : model}>
         {formatModelName(model)}
         {formatModelName(model) !== model && <code>{model}</code>}
