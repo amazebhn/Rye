@@ -6,6 +6,9 @@ import ModelSelect from "../shared/ModelSelect";
 import MentionComposer from "./MentionComposer";
 import { AgentMentionText } from "../agents/AgentHoverCard";
 import type { AgentRecord } from "../../utils/types";
+import type { ContextRef, PendingAttachment } from "../../utils/attachments";
+import AttachMenu from "./AttachMenu";
+import AttachmentChips from "./AttachmentChips";
 
 interface Props {
   /** "hero" renders the larger, centered composer used on an empty chat. */
@@ -25,6 +28,14 @@ interface Props {
   onSend: () => void;
   // "question": sending answers the agent's question; "approval": sending declines the tool call.
   promptPending?: "question" | "approval";
+  /** Files picked for this message (uploading or ready). */
+  attachments?: PendingAttachment[];
+  onAddFiles?: (files: File[]) => void;
+  onRemoveAttachment?: (key: string) => void;
+  /** SOPs and tools picked for this message. */
+  references?: ContextRef[];
+  onAddReference?: (ref: ContextRef) => void;
+  onRemoveReference?: (key: string) => void;
 }
 
 export default function MessageInput({
@@ -43,9 +54,26 @@ export default function MessageInput({
   onInput,
   onSend,
   promptPending,
+  attachments = [],
+  onAddFiles,
+  onRemoveAttachment,
+  references = [],
+  onAddReference,
+  onRemoveReference,
 }: Props) {
-  const canSend = input.trim().length > 0;
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const ready = attachments.some((a) => a.status === "ready") || references.length > 0;
+  // A message may be only files, but not while any of them is still uploading.
+  const canSend = (input.trim().length > 0 || ready) && !uploading;
   const sendDisabled = !canSend;
+  const [dragging, setDragging] = React.useState(false);
+  const dropFiles = (e: React.DragEvent) => {
+    if (!onAddFiles || !Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    setDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) onAddFiles(files);
+  };
   const dictation = useDictation();
   const send = () => {
     // Stop listening first (dropping an unfinished recording) so late words don't land in the emptied box.
@@ -92,14 +120,36 @@ export default function MessageInput({
             ))}
           </ul>
         )}
-        <div className="input-box" style={{ position: "relative" }}>
+        <div
+          className={`input-box${dragging ? " is-dropping" : ""}`}
+          style={{ position: "relative" }}
+          onDragOver={(e) => {
+            if (!onAddFiles || !Array.from(e.dataTransfer.types).includes("Files")) return;
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+          }}
+          onDrop={dropFiles}
+        >
+          {(attachments.length > 0 || references.length > 0) && (
+            <AttachmentChips
+              pending={attachments}
+              onRemove={onRemoveAttachment}
+              refs={references}
+              onRemoveRef={onRemoveReference}
+              className="attachment-chips--composer"
+            />
+          )}
           <MentionComposer
             value={input}
             onChange={onInput}
-            onSend={send}
+            onSend={() => { if (canSend) send(); }}
             placeholder={placeholder}
             ariaLabel={promptPending === "question" ? "Answer Rye's question" : "Chat message"}
             autoFocusTrigger={!loading && !promptPending}
+            onPasteFiles={onAddFiles}
           />
           <div className="input-box-actions">
             <div className="input-box-actions-left">
@@ -109,6 +159,7 @@ export default function MessageInput({
                 activeAgentId={activeAgentId}
                 onSelectAgent={onSelectAgent}
               />
+              {onAddFiles && <AttachMenu onFiles={onAddFiles} onRef={onAddReference} picked={references} />}
             </div>
             <div className="input-box-actions-right">
               {dictation.error && <span className="dictation-error" role="status">{dictation.error}</span>}

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CornerDownLeft, Search } from "lucide-react";
 import type { AgentRecord, ChatRecord } from "../../utils/types";
-import { queryTerms, useAgentSection, useChatSection, type OptionProps, type SearchSection } from "./searchSections";
+import { queryTerms, useAgentSection, useChatSection, useNewChatSection, type OptionProps, type SearchSection } from "./searchSections";
 
 interface Props {
   /** All chats, newest first; shown as "Recent" before anything is typed. */
@@ -15,6 +15,8 @@ interface Props {
   onOpen: (chatId: string, messageIndex?: number) => void;
   /** Open an agent's dedicated chat. */
   onOpenAgent: (agent: AgentRecord) => void;
+  /** Start a new chat, with `draft` in the composer when given. Without it, no "New chat" row is offered. */
+  onNewChat?: (draft?: string) => void;
   onClose: () => void;
 }
 
@@ -22,7 +24,7 @@ interface Props {
  * Search in a dialog over the app (Cmd/Ctrl+K): chats and messages, and custom agents.
  * Each kind of result is a section from searchSections.tsx; this component only lays them out and handles the keys.
  */
-export default function ChatSearchModal({ chats, chatsLoading = false, agentName, onOpen, onOpenAgent, onClose }: Props) {
+export default function ChatSearchModal({ chats, chatsLoading = false, agentName, onOpen, onOpenAgent, onNewChat, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -30,11 +32,17 @@ export default function ChatSearchModal({ chats, chatsLoading = false, agentName
   const q = query.trim();
 
   // Every kind of result, in the order drawn. A new kind is one more hook from searchSections.tsx, added here.
+  // Agents first: they match instantly, while chat results arrive after a debounce and a fetch.
+  // The other way round, the agent row appeared and was then pushed down under the chats.
+  const agentSection = useAgentSection({ query: q, terms, onOpenAgent });
+  const chatSection = useChatSection({ query: q, terms, chats, agentName, onOpen });
+  const newChat = useNewChatSection({ query: q, onNewChat: onNewChat ?? (() => {}) });
+  // "New chat" leads before anything is typed, and follows the results once there is a query, so Enter opens the best match.
   const sections: SearchSection[] = [
-    // Agents first: they match instantly, while chat results arrive after a debounce and a fetch.
-    // The other way round, the agent row appeared and was then pushed down under the chats.
-    useAgentSection({ query: q, terms, onOpenAgent }),
-    useChatSection({ query: q, terms, chats, agentName, onOpen }),
+    ...(onNewChat && !q ? [newChat] : []),
+    agentSection,
+    chatSection,
+    ...(onNewChat && q ? [newChat] : []),
   ];
   const shown = sections.filter((section) => section.options.length > 0);
   // Everything the arrow keys step through, in the order it is drawn.
@@ -142,7 +150,7 @@ export default function ChatSearchModal({ chats, chatsLoading = false, agentName
                   aria-labelledby={`chat-search-group-${section.id}`}
                   data-section={section.id}
                 >
-                  <div className="chat-search-group" id={`chat-search-group-${section.id}`}>{section.label}</div>
+                  <div className={`chat-search-group${section.hideLabel ? " chat-search-group--hidden" : ""}`} id={`chat-search-group-${section.id}`}>{section.label}</div>
                   {section.render(optionProps)}
                 </div>
               ))}

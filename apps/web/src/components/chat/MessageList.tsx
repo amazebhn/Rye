@@ -22,8 +22,11 @@ import ArtifactCard, { artifactRefs } from "../artifacts/ArtifactCard";
 import TableFrame from "../shared/TableFrame";
 import ResultDataGrid from "../results/ResultDataGrid";
 import AgentAvatar from "../agents/AgentAvatar";
-import AgentHoverCard, { AgentMentionText } from "../agents/AgentHoverCard";
+import AgentHoverCard, { AgentMentionPill, AgentMentionText } from "../agents/AgentHoverCard";
+import MentionComposer from "./MentionComposer";
+import AttachmentChips from "./AttachmentChips";
 import { useAgents } from "../../contexts/AgentContext";
+import { MOBILE_BREAKPOINT } from "../../utils/viewport";
 import {
   ArrowDown,
   Check,
@@ -402,7 +405,55 @@ interface MarkdownNode {
   type: string;
   value?: string;
   children?: MarkdownNode[];
-  data?: { hProperties?: Record<string, string> };
+  data?: { hName?: string; hProperties?: Record<string, string>; hChildren?: MarkdownNode[] };
+}
+
+const REPLY_MENTION_RE = /(^|[\s(])@([a-zA-Z0-9][a-zA-Z0-9_-]{0,47})\b/g;
+
+/**
+ * Mark "@slug" in reply text so it can be drawn as an agent pill (see ReplyMention). Text inside
+ * links and code is left alone; whether the slug is a real agent is decided when drawing.
+ */
+function remarkAgentMentions() {
+  return (tree: MarkdownNode) => {
+    const visit = (parent: MarkdownNode) => {
+      if (parent.type === "link" || parent.type === "linkReference") return;
+      const children = parent.children;
+      if (!children) return;
+      const next: MarkdownNode[] = [];
+      for (const node of children) {
+        if (node.type !== "text" || !node.value?.includes("@")) {
+          visit(node);
+          next.push(node);
+          continue;
+        }
+        const text = node.value;
+        let last = 0;
+        for (const m of text.matchAll(REPLY_MENTION_RE)) {
+          const start = (m.index ?? 0) + m[1].length;
+          if (start > last) next.push({ type: "text", value: text.slice(last, start) });
+          const raw = `@${m[2]}`;
+          next.push({
+            type: "agentMention",
+            value: raw,
+            data: { hName: "span", hProperties: { "data-agent-mention": m[2].toLowerCase() }, hChildren: [{ type: "text", value: raw }] },
+          });
+          last = start + raw.length;
+        }
+        if (last === 0) next.push(node);
+        else if (last < text.length) next.push({ type: "text", value: text.slice(last) });
+      }
+      parent.children = next;
+    };
+    visit(tree);
+  };
+}
+
+/** An "@slug" in a reply: the agent's pill when one has that slug, the plain text otherwise. */
+function ReplyMention({ slug, children }: { slug: string; children: React.ReactNode }) {
+  const { agentBySlug } = useAgents();
+  const agent = agentBySlug.get(slug);
+  return agent ? <AgentMentionPill agent={agent} /> : <>{children}</>;
 }
 
 function markdownNodeText(node: MarkdownNode): string {
@@ -531,9 +582,10 @@ function WideTable({
         main = main.parentElement;
       if (!main) return;
 
-      const marginX = 10;
-
       const mainRect = main.getBoundingClientRect();
+      // On a phone the table lines up with the messages' 16px gutters (chat.css).
+      const narrow = mainRect.width < MOBILE_BREAKPOINT;
+      const marginX = narrow ? 16 : 10;
       const messageRect = el?.parentElement?.getBoundingClientRect() ?? {
         width: 0,
         x: 0,
@@ -543,7 +595,7 @@ function WideTable({
       // Also fix the width so it matches what we measured
       el.style.width = TABLE_MAX + "px";
       setOffset(
-        mainRect.x - messageRect.x + marginX + (mainRect.width - TABLE_MAX) / 2,
+        mainRect.x - messageRect.x + (narrow ? 0 : marginX) + (mainRect.width - TABLE_MAX) / 2,
       );
     }
     recalc();
@@ -996,6 +1048,11 @@ const ANSWER_COMPONENTS: Components = {
   },
   a: ChatLink,
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  span: ({ children, node: _node, ...props }) => {
+    const slug = (props as Record<string, unknown>)["data-agent-mention"];
+    if (typeof slug === "string") return <ReplyMention slug={slug}>{children}</ReplyMention>;
+    return <span {...props}>{children}</span>;
+  },
 };
 
 interface AssistantSegmentProps {
@@ -1054,7 +1111,7 @@ function AssistantSegment({
         {(!failure || answer) && (
           <ChartSessionContext.Provider value={sessionId}>
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkTableTitles]}
+            remarkPlugins={[remarkGfm, remarkTableTitles, remarkAgentMentions]}
             components={ANSWER_COMPONENTS}
           >
             {answer + (streaming && !showTyping ? "▋" : "")}
@@ -1133,22 +1190,7 @@ export function Message({
     (lastMsg.toolCalls ?? []).every((tc) => tc.result !== undefined);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const editInputRef = useRef<HTMLTextAreaElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
-
-  useLayoutEffect(() => {
-    const el = editInputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [editing, draft]);
-
-  useLayoutEffect(() => {
-    const el = editInputRef.current;
-    if (!editing || !el) return;
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  }, [editing]);
 
   function startEdit() {
     setDraft(msg.content);
@@ -1160,8 +1202,10 @@ export function Message({
     requestAnimationFrame(() => editButtonRef.current?.focus());
   }
 
+  // A message that had files can be sent again with no text; it keeps its files.
+  const hasFiles = (msg.attachments?.length ?? 0) > 0 || (msg.references?.length ?? 0) > 0;
   function submitEdit() {
-    if (!onEdit || !canResubmit || !draft.trim()) return;
+    if (!onEdit || !canResubmit || (!draft.trim() && !hasFiles)) return;
     setEditing(false);
     onEdit(draft);
   }
@@ -1223,27 +1267,20 @@ export function Message({
         {isUserMessage &&
           (editing ? (
             <div className="user-edit">
-              <textarea
-                ref={editInputRef}
-                className="user-edit-input"
-                aria-label="Edit message"
-                rows={1}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    submitEdit();
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    cancelEdit();
-                  }
-                }}
-              />
+              {hasFiles && <AttachmentChips sent={msg.attachments} refs={msg.references} className="attachment-chips--message" />}
+              {/* The chat composer's editor, so agent tags show as pills and @ suggests agents here too. */}
+              <div className="user-edit-field">
+                <MentionComposer
+                  value={draft}
+                  onChange={setDraft}
+                  onSend={submitEdit}
+                  onCancel={cancelEdit}
+                  placeholder="Edit your message"
+                  ariaLabel="Edit message"
+                  autoFocusTrigger={editing}
+                  className="user-edit-input"
+                />
+              </div>
               <div className="user-edit-actions">
                 <button
                   type="button"
@@ -1256,7 +1293,7 @@ export function Message({
                   type="button"
                   className="btn btn--sm btn--primary"
                   onClick={submitEdit}
-                  disabled={!canResubmit || !draft.trim()}
+                  disabled={!canResubmit || (!draft.trim() && !hasFiles)}
                 >
                   Send
                 </button>
@@ -1264,7 +1301,8 @@ export function Message({
             </div>
           ) : (
             <>
-              <div className="user-bubble"><AgentMentionText text={msg.content} /></div>
+              {hasFiles && <AttachmentChips sent={msg.attachments} refs={msg.references} className="attachment-chips--message" />}
+              {msg.content.trim() && <div className="user-bubble"><AgentMentionText text={msg.content} /></div>}
               {onEdit && canResubmit && (
                 <div className="message-actions">
                   <button

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, ExternalLink, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ChevronRight, ExternalLink, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import Modal, { ModalCancelButton } from "../shared/Modal";
+import { SheetAction, SheetSection } from "../shared/MobileListControls";
+import SettingsListHeader, { type SettingsListView } from "./SettingsListHeader";
 
 /** A server definition as it is written in mcp.json. Secrets there are `${ENV}` references. */
 interface McpServerConfig {
@@ -269,7 +271,8 @@ function ServerMenu({ onEdit, onRemove }: { onEdit: () => void; onRemove: () => 
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
   return (
-    <div ref={ref} className="sop-menu-wrap">
+    // In grid view the card opens its details on click; the menu is not part of that.
+    <div ref={ref} className="sop-menu-wrap" onClick={(e) => e.stopPropagation()}>
       <button type="button" className="icon-btn sop-menu-btn" onClick={() => setOpen((v) => !v)} title="Options" aria-label="Server options" aria-expanded={open}>
         <MoreHorizontal size={14} />
       </button>
@@ -288,6 +291,90 @@ function ServerMenu({ onEdit, onRemove }: { onEdit: () => void; onRemove: () => 
 }
 
 // ---------------------------------------------------------------------------
+// Pieces shared by the list and the grid
+// ---------------------------------------------------------------------------
+
+/** How a server is doing: the colour of its dot, a one-line summary, and where to sign in if it needs to. */
+function serverStatus(server: McpServer) {
+  const state = server.disabled ? "off" : server.connected ? "ok" : server.authRequired ? "warn" : "error";
+  const summary = server.disabled
+    ? "Turned off"
+    : server.problems.length > 0
+      ? `Can't be used: ${server.problems[0]}`
+      : server.connected
+        ? `Connected · ${toolCountLabel(server.toolCount)}`
+        : server.authRequired
+          ? "Sign-in required"
+          : `Not connected${server.error ? `: ${server.error}` : ""}`;
+  const authorizeUrl = server.authorizeUrl && /^https?:\/\//.test(server.authorizeUrl) ? server.authorizeUrl : null;
+  const signIn = !server.disabled && !server.connected ? authorizeUrl : null;
+  // A card shows the tool count in its footer, so its summary leaves it out.
+  const cardSummary = !server.disabled && server.problems.length === 0 && server.connected ? "Connected" : summary;
+  return { state, summary, cardSummary, signIn };
+}
+
+const toolCountLabel = (n: number) => `${n} ${n === 1 ? "tool" : "tools"}`;
+
+function ServerBadges({ server }: { server: McpServer }) {
+  return (
+    <>
+      <span className="settings-source">{TRANSPORT_LABEL[server.transport] ?? server.transport}</span>
+      {server.auth === "oauth" && <span className="settings-source">OAuth</span>}
+    </>
+  );
+}
+
+function SignInLink({ url }: { url: string }) {
+  return (
+    <a className="settings-reset" href={url} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>
+      Sign in <ExternalLink size={12} />
+    </a>
+  );
+}
+
+function ServerSwitch({ server, disabled, onChange }: { server: McpServer; disabled: boolean; onChange: (disabled: boolean) => void }) {
+  return (
+    <input
+      type="checkbox"
+      role="switch"
+      className="settings-switch"
+      checked={!server.disabled}
+      disabled={disabled}
+      aria-label={`${server.name} enabled`}
+      title={server.disabled ? "Turn on" : "Turn off"}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => onChange(!e.target.checked)}
+    />
+  );
+}
+
+/** What a server runs, what went wrong, and its tools: under an expanded row, or in the dialog a card opens. */
+function ServerDetails({ server }: { server: McpServer }) {
+  return (
+    <>
+      <div className="settings-mcp-def">
+        <code>{server.config.url ?? [server.config.command, ...(server.config.args ?? [])].filter(Boolean).join(" ")}</code>
+      </div>
+      {server.problems.length > 1 && <ul className="settings-mcp-problems">{server.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
+      {!server.disabled && !server.connected && server.error && <pre className="settings-mcp-error">{server.error}</pre>}
+      {server.tools.length > 0 ? (
+        <ul className="settings-mcp-tools" aria-label={`Tools from ${server.name}`}>
+          {server.tools.map((tool) => (
+            <li key={tool.name}>
+              <code>{tool.name}</code>
+              {tool.readOnly && <span className="settings-source">read-only</span>}
+              {tool.description && <span className="settings-mcp-tool-desc">{tool.description}</span>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="settings-task-desc">{server.connected ? "This server offers no tools." : "Its tools are listed here once it connects."}</p>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The section
 // ---------------------------------------------------------------------------
 
@@ -301,6 +388,10 @@ export default function McpServersSection() {
   const [form, setForm] = useState<{ editing: McpServer | null } | null>(null);
   const [removing, setRemoving] = useState<McpServer | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  // A list by default, as on the Skills page.
+  const [view, setView] = useState<SettingsListView>("list");
+  // The server whose details are open from a card (grid view). Looked up by name so it follows reloads.
+  const [detailsName, setDetailsName] = useState<string | null>(null);
 
   const apply = useCallback((data: McpServersResponse) => {
     setServers(data.servers);
@@ -342,21 +433,24 @@ export default function McpServersSection() {
       return next;
     });
 
+  const setDisabled = (server: McpServer, disabled: boolean) =>
+    void run(server.name, () => mcpRequest(`/mcp/servers/${encodeURIComponent(server.name)}`, "PATCH", { disabled }));
+  const details = detailsName === null ? null : servers?.find((s) => s.name === detailsName) ?? null;
+  const detailsStatus = details && serverStatus(details);
+
   return (
     <section className="settings-section" aria-labelledby="settings-mcp-title">
-      <div className="settings-section-bar">
-        <div className="settings-section-head">
-          <h3 className="settings-section-title" id="settings-mcp-title">MCP servers</h3>
-          <p className="settings-section-desc">
-            External tool servers Rye connects to and offers to the agent.
-            {configFile ? <> Saved in <code>{configFile}</code>.</> : null}
-          </p>
-        </div>
-        <div className="sop-panel-toolbar">
-          <div className="sop-search-wrap">
-            <Search size={13} className="sop-search-icon" />
-            <input className="sop-search-input" placeholder="Search servers…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search MCP servers" />
-          </div>
+      <SettingsListHeader
+        id="settings-mcp-title"
+        title="MCP servers"
+        description="External tool servers Rye connects to and offers to the agent."
+        query={query}
+        onQueryChange={setQuery}
+        searchPlaceholder="Search servers…"
+        searchLabel="Search MCP servers"
+        view={view}
+        onViewChange={setView}
+        actions={
           <button
             type="button"
             className="icon-btn faint"
@@ -365,13 +459,26 @@ export default function McpServersSection() {
             title="Re-read the config file and reconnect every server"
             aria-label="Reload MCP servers"
           >
-            <RefreshCw size={14} className={busy === "reload" ? "spin" : ""} />
+            <RefreshCw size={13} className={busy === "reload" ? "spin" : ""} />
           </button>
-          <button type="button" className="btn btn--primary btn--sm" onClick={() => setForm({ editing: null })}>
-            <Plus size={14} /> Add server
-          </button>
-        </div>
-      </div>
+        }
+        primary={{ label: "Add server", icon: Plus, onClick: () => setForm({ editing: null }) }}
+        // Pulling the list re-reads the servers' status; reconnecting every server stays a deliberate action in the sheet.
+        onRefresh={() => run("load", () => mcpRequest("/mcp/servers", "GET"))}
+        mobileFilters={
+          <SheetSection label="More">
+            <div className="mlc-actions">
+              <SheetAction
+                icon={RefreshCw}
+                label={busy === "reload" ? "Reconnecting…" : "Re-read config & reconnect all"}
+                busy={busy === "reload"}
+                disabled={busy !== null}
+                onClick={() => void run("reload", () => mcpRequest("/mcp/reload", "POST"))}
+              />
+            </div>
+          </SheetSection>
+        }
+      />
 
       {error && <div className="settings-error" role="alert">{error}</div>}
 
@@ -383,22 +490,48 @@ export default function McpServersSection() {
         </p>
       ) : shown.length === 0 ? (
         <p className="settings-placeholder">No server matches "{query.trim()}".</p>
+      ) : view === "card" ? (
+        <ul className="sop-card-grid settings-mcp-grid" aria-label="MCP servers">
+          {shown.map((server) => {
+            const { state, cardSummary, signIn } = serverStatus(server);
+            return (
+              // A click anywhere on the card opens its details; the name is the button keyboard users reach.
+              <li
+                className={`sop-card settings-mcp-card${server.disabled ? " is-off" : ""}`}
+                key={server.name}
+                onClick={() => setDetailsName(server.name)}
+              >
+                <div className="sop-card-header">
+                  <button
+                    type="button"
+                    className="sop-card-title settings-mcp-card-open"
+                    onClick={(e) => { e.stopPropagation(); setDetailsName(server.name); }}
+                    aria-haspopup="dialog"
+                    title="Show details"
+                  >
+                    <span className={`settings-mcp-dot is-${state}`} aria-hidden="true" />
+                    <span className="settings-mcp-card-name">{server.name}</span>
+                  </button>
+                  <ServerMenu onEdit={() => setForm({ editing: server })} onRemove={() => setRemoving(server)} />
+                </div>
+                <div className="settings-mcp-card-badges"><ServerBadges server={server} /></div>
+                <p className="sop-card-preview settings-mcp-detail">{cardSummary}</p>
+                <div className="sop-card-footer">
+                  <span>{server.connected ? toolCountLabel(server.toolCount) : server.disabled ? "" : "No tools yet"}</span>
+                  <span className="settings-mcp-card-controls">
+                    {signIn && <SignInLink url={signIn} />}
+                    <ServerSwitch server={server} disabled={busy !== null} onChange={(off) => setDisabled(server, off)} />
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       ) : (
         <ul className="settings-task-list settings-mcp-list" aria-label="MCP servers">
           {shown.map((server) => {
-            const invalid = server.problems.length > 0;
-            const state = server.disabled ? "off" : server.connected ? "ok" : server.authRequired ? "warn" : "error";
-            const authorizeUrl = server.authorizeUrl && /^https?:\/\//.test(server.authorizeUrl) ? server.authorizeUrl : null;
+            const { state, summary, signIn } = serverStatus(server);
             const open = expanded.has(server.name);
-            const summary = server.disabled
-              ? "Turned off"
-              : invalid
-                ? `Can't be used: ${server.problems[0]}`
-                : server.connected
-                  ? `Connected · ${server.toolCount} ${server.toolCount === 1 ? "tool" : "tools"}`
-                  : server.authRequired
-                    ? "Sign-in required"
-                    : `Not connected${server.error ? `: ${server.error}` : ""}`;
             return (
               <li className={`settings-mcp-item${server.disabled ? " is-off" : ""}`} key={server.name}>
                 <div className="settings-task">
@@ -408,58 +541,61 @@ export default function McpServersSection() {
                       <span className="settings-task-name settings-mcp-name">
                         <span className={`settings-mcp-dot is-${state}`} aria-hidden="true" />
                         {server.name}
-                        <span className="settings-source">{TRANSPORT_LABEL[server.transport] ?? server.transport}</span>
-                        {server.auth === "oauth" && <span className="settings-source">OAuth</span>}
+                        <ServerBadges server={server} />
                       </span>
                       <span className="settings-task-desc settings-mcp-detail">{summary}</span>
                     </span>
                   </button>
-                  {!server.disabled && !server.connected && authorizeUrl && (
-                    <a className="settings-reset" href={authorizeUrl} target="_blank" rel="noreferrer noopener">
-                      Sign in <ExternalLink size={12} />
-                    </a>
-                  )}
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    className="settings-switch"
-                    checked={!server.disabled}
-                    disabled={busy !== null}
-                    aria-label={`${server.name} enabled`}
-                    title={server.disabled ? "Turn on" : "Turn off"}
-                    onChange={(e) => {
-                      const disabled = !e.target.checked;
-                      void run(server.name, () => mcpRequest(`/mcp/servers/${encodeURIComponent(server.name)}`, "PATCH", { disabled }));
-                    }}
-                  />
+                  {signIn && <SignInLink url={signIn} />}
+                  <ServerSwitch server={server} disabled={busy !== null} onChange={(off) => setDisabled(server, off)} />
                   <ServerMenu onEdit={() => setForm({ editing: server })} onRemove={() => setRemoving(server)} />
                 </div>
                 {open && (
                   <div className="settings-mcp-more">
-                    <div className="settings-mcp-def">
-                      <code>{server.config.url ?? [server.config.command, ...(server.config.args ?? [])].filter(Boolean).join(" ")}</code>
-                    </div>
-                    {server.problems.length > 1 && <ul className="settings-mcp-problems">{server.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
-                    {!server.disabled && !server.connected && server.error && <pre className="settings-mcp-error">{server.error}</pre>}
-                    {server.tools.length > 0 ? (
-                      <ul className="settings-mcp-tools" aria-label={`Tools from ${server.name}`}>
-                        {server.tools.map((tool) => (
-                          <li key={tool.name}>
-                            <code>{tool.name}</code>
-                            {tool.readOnly && <span className="settings-source">read-only</span>}
-                            {tool.description && <span className="settings-mcp-tool-desc">{tool.description}</span>}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="settings-task-desc">{server.connected ? "This server offers no tools." : "Its tools are listed here once it connects."}</p>
-                    )}
+                    <ServerDetails server={server} />
                   </div>
                 )}
               </li>
             );
           })}
         </ul>
+      )}
+
+      {configFile && <p className="settings-list-foot">Saved in <code>{configFile}</code>.</p>}
+
+      {details && detailsStatus && (
+        <Modal
+          title={details.name}
+          className="modal--compact settings-mcp-modal"
+          onClose={() => setDetailsName(null)}
+          footer={
+            <>
+              <ModalCancelButton label="Close" />
+              <button
+                type="button"
+                className="btn btn--primary btn--sm"
+                onClick={() => { setDetailsName(null); setForm({ editing: details }); }}
+              >
+                <Pencil size={12} /> Edit
+              </button>
+            </>
+          }
+        >
+          <div className="settings-mcp-details">
+            <div className="settings-mcp-details-status">
+              <span className="settings-mcp-name">
+                <span className={`settings-mcp-dot is-${detailsStatus.state}`} aria-hidden="true" />
+                <ServerBadges server={details} />
+              </span>
+              <span className="settings-mcp-card-controls">
+                {detailsStatus.signIn && <SignInLink url={detailsStatus.signIn} />}
+                <ServerSwitch server={details} disabled={busy !== null} onChange={(off) => setDisabled(details, off)} />
+              </span>
+            </div>
+            <p className="settings-task-desc settings-mcp-detail">{detailsStatus.summary}</p>
+            <ServerDetails server={details} />
+          </div>
+        </Modal>
       )}
 
       {form && <ServerForm editing={form.editing} onSaved={apply} onClose={() => setForm(null)} />}

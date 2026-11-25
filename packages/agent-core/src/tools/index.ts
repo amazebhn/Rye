@@ -53,6 +53,13 @@ import { RUN_SKILL_SCRIPT_TOOL_NAME, runSkillScriptTool } from "../skill/runner.
 import type { ScriptApprovalToken } from "../skill/script-approval.js";
 import { chatTools, readChatForAgent, searchChatsForAgent } from "./chats.js";
 import type { ChatStore } from "../chat/store.js";
+import { attachmentTools, readAttachmentForAgent } from "./attachments.js";
+import type { AttachmentStore } from "../chat/attachments.js";
+
+let _attachmentStore: AttachmentStore | undefined;
+export function setAttachmentStore(store: AttachmentStore) {
+  _attachmentStore = store;
+}
 
 let _chatStore: ChatStore | undefined;
 export function setChatStore(store: ChatStore) {
@@ -150,6 +157,7 @@ const STATIC_TOOLS: Tool[] = [
   ...skillTools,
   ...artifactTools,
   ...chatTools,
+  ...attachmentTools,
   {
     name: "save_sop_tool",
     description:
@@ -219,7 +227,7 @@ const STATIC_TOOLS: Tool[] = [
   {
     name: "set_model_pricing_tool",
     description:
-      "Populate the model pricing table used for cost estimates in the Analytics panel. " +
+      "Populate the model pricing table used for cost estimates on the Usage page (Settings → Usage, where the user can also edit it). " +
       "Use this when the user pastes a pricing page, table, or any unstructured text containing model prices — " +
       "parse it yourself and pass normalised entries. Prices MUST be converted to USD per MILLION tokens " +
       "(e.g. $3 per 1M input = 3; $0.003 per 1K input = 3). Existing models are overwritten.",
@@ -454,6 +462,12 @@ export async function executeTool(
     case "read_chat_tool":
       if (!_chatStore) return "Conversation history is not available.";
       result = readChatForAgent(_chatStore, args as { chat_id: string; message?: number });
+      break;
+
+    // Files attached to messages
+    case "read_attachment_tool":
+      if (!_attachmentStore) return "Attachments are not available.";
+      result = readAttachmentForAgent(_attachmentStore, args as { id: string; offset?: number; length?: number });
       break;
 
     // Knowledge Base (RAG)

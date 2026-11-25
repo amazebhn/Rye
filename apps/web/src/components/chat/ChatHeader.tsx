@@ -1,11 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Check, Copy, FileOutput, MoreVertical, PanelLeftOpen } from "lucide-react";
+import { Check, Copy, Database, FileOutput, MoreVertical } from "lucide-react";
 import StoredResultsPicker from "./StoredResultsPicker";
+import SidebarButton from "../shell/SidebarButton";
+import { useIsMobile } from "../../utils/viewport";
 import AgentAvatar from "../agents/AgentAvatar";
 import AgentHoverCard from "../agents/AgentHoverCard";
 import type { AgentRecord } from "../../utils/types";
 
-function ChatActionsMenu({ sessionId, onHandoff }: { sessionId: string; onHandoff?: () => void }) {
+function ChatActionsMenu({ sessionId, onHandoff, onOpenResults }: {
+  sessionId: string;
+  onHandoff?: () => void;
+  /** On a phone the stored results open from this menu instead of their own header button. */
+  onOpenResults?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -61,6 +68,17 @@ function ChatActionsMenu({ sessionId, onHandoff }: { sessionId: string; onHandof
       </button>
       {open && (
         <div className="sidebar-dropdown chat-header-dropdown" role="menu">
+          {onOpenResults && (
+            <button
+              type="button"
+              className="sidebar-dropdown-item"
+              role="menuitem"
+              onClick={run(onOpenResults)}
+            >
+              <Database size={17} />
+              <span>Stored results</span>
+            </button>
+          )}
           <button
             type="button"
             className="sidebar-dropdown-item"
@@ -91,26 +109,29 @@ function ChatActionsMenu({ sessionId, onHandoff }: { sessionId: string; onHandof
 }
 
 interface Props {
-  sidebarOpen: boolean;
   chatTitle: string | undefined;
   activeAgent?: AgentRecord;
   displaySessionId: string | undefined;
   contextPct: number | undefined;
-  onOpenSidebar: () => void;
   onOpenResult: (id: string) => void;
   onHandoff?: () => void; // absent until the chat has a session
 }
 
 export default function ChatHeader({
-  sidebarOpen,
   chatTitle,
   activeAgent,
   displaySessionId,
   contextPct,
-  onOpenSidebar,
   onOpenResult,
   onHandoff,
 }: Props) {
+  const isMobile = useIsMobile();
+  // On a phone the stored results move into the ⋯ menu, which (like any stored result) needs the chat to have a session.
+  const resultsInMenu = isMobile && !!displaySessionId;
+  const [resultsOpen, setResultsOpen] = useState(false);
+  useEffect(() => {
+    if (!resultsInMenu) setResultsOpen(false);
+  }, [resultsInMenu]);
   const ctxColor =
     contextPct === undefined ? undefined
     : contextPct >= 85 ? "#dc2626"
@@ -119,11 +140,7 @@ export default function ChatHeader({
 
   return (
     <header className="chat-header">
-      {!sidebarOpen && (
-        <button className="icon-btn" style={{ color: "var(--main-fg-muted)" }} onClick={onOpenSidebar} title="Open sidebar">
-          <PanelLeftOpen size={18} />
-        </button>
-      )}
+      <SidebarButton />
       <span className="chat-header-title" style={activeAgent ? { display: "inline-flex", alignItems: "center", gap: 8 } : undefined}>
         {activeAgent ? (
           <AgentHoverCard agent={activeAgent} placement="bottom">
@@ -136,8 +153,28 @@ export default function ChatHeader({
           <span>{chatTitle ?? "Rye Agent"}</span>
         )}
       </span>
-      <StoredResultsPicker sessionId={displaySessionId} onSelect={onOpenResult} />
-      {displaySessionId && <ChatActionsMenu sessionId={displaySessionId} onHandoff={onHandoff} />}
+      {resultsInMenu ? (
+        <StoredResultsPicker
+          sessionId={displaySessionId}
+          onSelect={onOpenResult}
+          controlled={{
+            open: resultsOpen,
+            onOpenChange: (open) => {
+              setResultsOpen(open);
+              if (!open) document.querySelector<HTMLButtonElement>(".chat-header-menu > .chat-header-db-btn")?.focus();
+            },
+          }}
+        />
+      ) : isMobile ? null : (
+        <StoredResultsPicker sessionId={displaySessionId} onSelect={onOpenResult} />
+      )}
+      {displaySessionId && (
+        <ChatActionsMenu
+          sessionId={displaySessionId}
+          onHandoff={onHandoff}
+          onOpenResults={resultsInMenu ? () => setResultsOpen(true) : undefined}
+        />
+      )}
       {contextPct !== undefined && (
         <span className="chat-header-session" style={{ color: ctxColor, marginLeft: 4 }} title="Context window usage">
           ctx {contextPct}%

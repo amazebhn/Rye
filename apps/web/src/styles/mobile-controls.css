@@ -1,0 +1,328 @@
+/* ── Phone list controls (components/shared/MobileListControls.tsx, utils/usePullToRefresh.ts) ──
+   On a phone the list pages (SOPs, Agents, Memory, Settings' Skills, MCP servers and Tools) keep only
+   the menu button, the title and the primary action at the top. Search and filters float at the bottom
+   right, the filters open as a bottom sheet (the shared Modal, compact), and the list refreshes when
+   pulled down. The components render nothing above MOBILE_BREAKPOINT, so these rules only matter there. */
+
+.mlc-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 767px) {
+  /* The end of a list clears the floating buttons, so its last row can always be scrolled into view. */
+  .sop-panel-body:has(.mlc) { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  /* A pull at the top of a list is ours (pull to refresh), not the browser's. */
+  .sop-panel-body { overscroll-behavior-y: contain; }
+
+  /* ── Top bar: menu, title, primary action ── */
+  .sop-panel-header:has(> .mlc-primary) { flex-wrap: nowrap; }
+  .sop-panel-header:has(> .mlc-primary) > .sop-panel-title {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mlc-primary {
+    flex-shrink: 0;
+    height: 36px;
+    margin-left: auto;
+    padding: 0 14px;
+    font-size: 14px;
+  }
+  .mlc-primary:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; }
+
+  /* Settings list pages: the primary action beside the page's heading (the pill row is the top bar there). */
+  .settings-list-head-row { display: flex; align-items: flex-start; gap: 12px; }
+  .settings-list-head-row > .settings-section-head { flex: 1 1 auto; min-width: 0; }
+  .settings-list-head-row > .settings-list-primary { min-width: 0; }
+  .settings-list-bar > .ptr { margin-bottom: -14px; }
+
+  /* ── Floating cluster ── */
+  .mlc {
+    position: fixed;
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(16px + max(env(safe-area-inset-bottom), var(--mlc-keyboard, 0px)));
+    z-index: 120;
+    display: flex;
+    justify-content: flex-end;
+    pointer-events: none;
+  }
+  .mlc.is-searching { left: calc(16px + env(safe-area-inset-left)); }
+  .mlc > * { pointer-events: auto; }
+  .mlc-cluster {
+    display: flex;
+    gap: 12px;
+    animation: mlc-pop 0.18s ease-out;
+  }
+  .mlc-fab {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--main-border);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--main-bg) 90%, transparent);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    box-shadow: var(--shadow-float);
+    color: var(--main-fg);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 0.12s ease, background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .mlc-fab:active { transform: scale(0.94); }
+  .mlc-fab.is-active {
+    border-color: color-mix(in srgb, var(--main-accent) 50%, var(--main-border));
+    background: color-mix(in srgb, var(--main-accent) 12%, var(--main-bg));
+    color: var(--main-accent);
+  }
+  .mlc-fab:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; }
+  .mlc-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-radius: var(--radius-pill);
+    background: var(--main-fg);
+    box-shadow: 0 0 0 2px var(--main-bg);
+    color: var(--main-bg);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 20px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .mlc-dot {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--main-accent);
+    box-shadow: 0 0 0 2px var(--main-bg);
+  }
+
+  /* ── Floating search field ── */
+  .mlc-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 52px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 4px 0 16px;
+    border: 1px solid var(--main-border);
+    border-radius: var(--radius-pill);
+    background: var(--main-bg);
+    box-shadow: var(--shadow-float);
+    animation: mlc-search-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .mlc-search:focus-within { border-color: var(--main-accent); }
+  .mlc-search-icon { flex-shrink: 0; color: var(--main-fg-muted); }
+  .mlc-search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    padding: 0 8px;
+    border: 0;
+    background: transparent;
+    color: var(--main-fg);
+    font: inherit;
+    font-size: 16px;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .mlc-search-input::placeholder { color: var(--main-fg-faint); }
+  .mlc-search-input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+  .mlc-search-btn {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--main-fg-muted);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mlc-search-btn:active { background: var(--main-surface); color: var(--main-fg); }
+  .mlc-search-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -2px; }
+
+  /* ── Filter sheet: the compact Modal, which is already a bottom sheet at this width ── */
+  /* The card itself is every phone bottom sheet's (modal.css); this only adds the slide-up. */
+  .modal-panel.mlc-sheet {
+    animation: mlc-sheet-in 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .modal-panel.mlc-sheet:focus { outline: none; }
+  .mlc-sheet-body { display: flex; flex-direction: column; gap: 18px; }
+  .mlc-sheet-section { margin: 0; }
+  /* Section headings as in the app's menus (.attach-menu-section): small, muted, no caps. */
+  .mlc-sheet-label {
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--main-fg-muted);
+  }
+  .mlc-sheet-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--main-fg-muted); }
+  /* Two or three plain choices: the app's segmented control (sop-diff-tabs), full width. */
+  .mlc-segmented { display: flex; width: 100%; box-sizing: border-box; }
+  .mlc-segmented .sop-diff-tab {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 36px;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Longer choices and one-off actions: rows like the sidebar and + menus (.sidebar-dropdown-item,
+     .attach-menu-item), at touch height, the chosen one checked. */
+  .mlc-menu,
+  .mlc-actions { display: flex; flex-direction: column; gap: 1px; margin: 0 -8px; }
+  .mlc-row {
+    width: 100%;
+    min-height: 44px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--sidebar-menu-fg);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 450;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mlc-row > svg { flex-shrink: 0; color: var(--main-fg-muted); stroke-width: 1.8; }
+  .mlc-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mlc-row-count { font-size: 13px; color: var(--main-fg-muted); font-variant-numeric: tabular-nums; }
+  .mlc-row > .mlc-row-check { visibility: hidden; color: var(--sidebar-menu-fg); }
+  .mlc-row.is-checked { font-weight: 550; }
+  .mlc-row.is-checked > .mlc-row-check { visibility: visible; }
+  .mlc-row:active { background: var(--sidebar-menu-hover); }
+  .mlc-row:disabled { color: var(--sidebar-menu-fg-disabled); cursor: not-allowed; }
+  .mlc-row:focus-visible { outline: 2px solid var(--sidebar-menu-focus); outline-offset: -2px; }
+  .mlc-sheet-field { display: flex; flex-direction: column; gap: 6px; }
+  .mlc-sheet-field .settings-select { width: 100%; height: 44px; }
+
+  /* A two-way switch drawn at the top of a list (Memory: Facts & Glossary / Knowledge Base). */
+  .mlc-segment {
+    display: flex;
+    gap: 4px;
+    margin: 0 0 16px;
+    padding: 3px;
+    border: 1px solid var(--main-border);
+    border-radius: var(--radius-lg);
+    background: var(--main-surface);
+  }
+  .mlc-segment > button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--main-fg-muted);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .mlc-segment > button[aria-selected="true"] {
+    background: var(--main-bg);
+    box-shadow: var(--shadow-xs);
+    color: var(--main-fg);
+    font-weight: 600;
+  }
+  .mlc-segment > button:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -2px; }
+  .mlc-segment-count { font-size: 12px; font-weight: 400; color: var(--main-fg-muted); }
+
+  /* ── Pull to refresh: a zero-height strip at the top of the list; the badge slides down with the pull. ── */
+  .ptr {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    height: 0;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .ptr[data-phase="idle"] { visibility: hidden; }
+  .ptr-badge {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--main-border);
+    border-radius: 50%;
+    background: var(--main-bg);
+    box-shadow: var(--shadow-md);
+    color: var(--main-fg-muted);
+    opacity: var(--ptr-progress, 0);
+    transform: translateY(calc(var(--ptr-pull, 0px) - 44px));
+  }
+  .ptr-icon { transform: rotate(calc(var(--ptr-progress, 0) * 270deg)); }
+  .ptr[data-armed] .ptr-badge {
+    border-color: color-mix(in srgb, var(--main-accent) 50%, var(--main-border));
+    color: var(--main-accent);
+  }
+  .ptr[data-phase="refreshing"] .ptr-icon { animation: spin 0.8s linear infinite; }
+  .ptr[data-phase="settling"] .ptr-badge { transition: transform 0.2s ease, opacity 0.2s ease; }
+}
+
+@keyframes mlc-pop {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mlc-search-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mlc-sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
+  .mlc-cluster,
+  .mlc-search,
+  .modal-panel.mlc-sheet { animation: none; }
+  .mlc-fab { transition: none; }
+  .mlc-fab:active { transform: none; }
+  .ptr[data-phase="settling"] .ptr-badge { transition: none; }
+  /* The arrow still turns with the finger (direct manipulation); it doesn't spin on its own. */
+  .ptr[data-phase="refreshing"] .ptr-icon { animation: none; }
+}

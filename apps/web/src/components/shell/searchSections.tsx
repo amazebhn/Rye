@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { MessageSquare, MessagesSquare } from "lucide-react";
+import { MessageSquare, MessagesSquare, PenLine } from "lucide-react";
 import type { AgentRecord, ChatRecord } from "../../utils/types";
 import { useAgents } from "../../contexts/AgentContext";
 import AgentAvatar from "../agents/AgentAvatar";
@@ -38,6 +38,30 @@ export interface SearchSection {
   error?: string;
   /** For the footer, e.g. "3 chats". */
   summary?: string;
+  /** Keep the heading for screen readers only (a section that is one self-explanatory row). */
+  hideLabel?: boolean;
+}
+
+// ── Start a new chat ─────────────────────────────────────────────────────
+
+/**
+ * "New chat": first before anything is typed, last once there is a query (so Enter still opens the
+ * best match), where it starts a new chat with the query already in the box.
+ */
+export function useNewChatSection({ query: q, onNewChat }: { query: string; onNewChat: (draft?: string) => void }): SearchSection {
+  const label = q ? `New chat: “${q.length > 60 ? `${q.slice(0, 60)}…` : q}”` : "New chat";
+  return {
+    id: "new-chat",
+    label: "Start",
+    hideLabel: true,
+    options: [{ key: "new-chat", open: () => onNewChat(q || undefined) }],
+    render: (optionProps) => (
+      <div {...optionProps("new-chat")} data-kind="action">
+        <PenLine size={15} aria-hidden="true" />
+        <span className="chat-search-title-text">{label}</span>
+      </div>
+    ),
+  };
 }
 
 /** What every section is given. */
@@ -122,6 +146,13 @@ interface ChatSectionInput extends SearchInput {
 
 /** Recent chats before anything is typed, then chats and messages matching the query, ranked by the server. */
 export function useChatSection({ query: q, terms, chats, agentName, onOpen }: ChatSectionInput): SearchSection {
+  // A chat with a custom agent shows that agent's avatar, not the generic chat icon, and its replies are labelled with the agent's name.
+  const { agentById } = useAgents();
+  const chatIcon = (agentId?: string) => {
+    const agent = agentId ? agentById.get(agentId) : undefined;
+    return agent ? <AgentAvatar agent={agent} size="xs" hideTooltip /> : <MessagesSquare size={15} aria-hidden="true" />;
+  };
+  const replier = (agentId?: string) => (agentId ? agentById.get(agentId)?.name : undefined) ?? "Rye";
   const [result, setResult] = useState<{ query: string; hits: Hit[] } | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -157,7 +188,7 @@ export function useChatSection({ query: q, terms, chats, agentName, onOpen }: Ch
       render: (optionProps) =>
         recent.map((chat) => (
           <div key={chat.id} {...optionProps(`chat:${chat.id}`)} data-kind="chat">
-            <MessagesSquare size={15} aria-hidden="true" />
+            {chatIcon(chat.agentId)}
             <span className="chat-search-title-text">{(chat.agentId && agentName(chat.agentId)) || chat.title}</span>
             <span className="chat-search-when">{when(chat.updatedAt)}</span>
           </div>
@@ -185,7 +216,7 @@ export function useChatSection({ query: q, terms, chats, agentName, onOpen }: Ch
         const extra = hit.matchCount - hit.matches.length;
         const heading = (
           <>
-            <MessagesSquare size={15} aria-hidden="true" />
+            {chatIcon(hit.agentId)}
             <span className="chat-search-title-text"><Highlighted text={title} terms={terms} /></span>
             <span className="chat-search-when">{when(hit.updatedAt)}</span>
           </>
@@ -202,7 +233,7 @@ export function useChatSection({ query: q, terms, chats, agentName, onOpen }: Ch
               <div key={match.index} {...optionProps(`chat:${hit.chatId}:${match.index}`)} data-kind="message">
                 <MessageSquare size={13} aria-hidden="true" />
                 <span className="chat-search-snippet-text">
-                  <span className="chat-search-role">{match.role === "user" ? "You" : "Rye"}</span>
+                  <span className="chat-search-role">{match.role === "user" ? "You" : replier(hit.agentId)}</span>
                   {match.related && <span className="chat-search-related" title="Says something similar, in other words">Related</span>}
                   {/* Also what stood in for a term: another form of the word, or the right spelling of a typo. */}
                   <Highlighted text={match.snippet} terms={match.matched ? [...terms, ...match.matched] : terms} />

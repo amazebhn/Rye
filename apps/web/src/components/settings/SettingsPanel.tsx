@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Blocks, Bot, Cpu, Plug, RotateCcw, ScanSearch, SlidersHorizontal, Zap, type LucideIcon } from "lucide-react";
+import { BarChart3, Blocks, Bot, Cpu, Plug, Plus, RotateCcw, ScanSearch, SlidersHorizontal, Wrench, Zap, type LucideIcon } from "lucide-react";
 import RetrievalSection from "./RetrievalSection";
 import ProviderLogo from "../shared/ProviderLogo";
 import { formatModelName, groupModelsByProvider } from "../../utils/modelNames";
@@ -8,7 +8,16 @@ import { folderApi, readSuggestFolders, writeSuggestFolders, type CategorizeResp
 import { useAgents, type AgentChattiness } from "../../contexts/AgentContext";
 import SkillPanel from "../skills/SkillPanel";
 import McpServersSection from "./McpServersSection";
+import SettingsListHeader, { type SettingsListView } from "./SettingsListHeader";
 import ThemeSetting from "./ThemeSetting";
+import TableSetting from "./TableSetting";
+import { saveUserName, useUserProfile } from "../../utils/profile";
+import type { SettingsPageKey } from "../../utils/routes";
+import ToolsSection, { type ToolFocus } from "./ToolsSection";
+import SidebarButton from "../shell/SidebarButton";
+
+// Lazy so recharts only loads when the Usage page is opened.
+const UsageSection = React.lazy(() => import("./UsageSection"));
 
 type Tier = "low" | "medium" | "high";
 type Task = "chat" | "subagent" | "compaction" | "extraction" | "doc_review" | "labels";
@@ -52,8 +61,8 @@ const TASKS: { key: Task; name: string; description: string }[] = [
   { key: "chat", name: "Chat", description: "Conversations, investigations and reports." },
   { key: "subagent", name: "Subagents", description: "Parallel research agents spawned during an investigation." },
   { key: "compaction", name: "Context compaction", description: "Summarizes long conversations to stay within the context window." },
-  { key: "extraction", name: "SOP & Skill capture", description: "Turns a conversation into a saved SOP or Skill." },
-  { key: "doc_review", name: "Document review", description: "Suggested edits in the AI Editor." },
+  { key: "extraction", name: "SOP & Skill capture", description: "Turns a conversation into a saved SOP or Skill, and runs the AI create and edit chats for SOPs, Skills and Agents." },
+  { key: "doc_review", name: "Document review", description: "Inline suggested edits while you write a document." },
   { key: "labels", name: "Titles & step labels", description: "Chat titles and one-line summaries of each step." },
 ];
 
@@ -87,7 +96,8 @@ async function request(method: "GET" | "PUT" | "DELETE", body?: unknown): Promis
   return json;
 }
 
-export type SettingsTab = "general" | "models" | "search" | "agents" | "skills" | "mcp" | "integrations";
+/** A Settings page; each has its own address (`settingsPath` in utils/routes.ts). */
+export type SettingsTab = SettingsPageKey;
 type SaveStatus = "idle" | "saving" | "saved";
 
 /**
@@ -102,6 +112,8 @@ const PAGES: { key: SettingsTab; name: string; icon: LucideIcon; soon?: boolean 
   { key: "agents", name: "Agents", icon: Bot },
   { key: "skills", name: "Skills", icon: Zap },
   { key: "mcp", name: "MCP servers", icon: Plug },
+  { key: "tools", name: "Tools", icon: Wrench },
+  { key: "usage", name: "Usage", icon: BarChart3 },
   { key: "integrations", name: "Integrations", icon: Blocks, soon: true },
 ];
 
@@ -111,9 +123,11 @@ interface Props extends FolderProps {
   onTabChange?: (tab: SettingsTab) => void;
   /** Changes when settings were saved somewhere else (another browser tab): Models reloads, other pages keep their state. */
   reloadKey?: number;
+  /** On the Tools page, the tool to scroll to and highlight (/settings/tools/<name>). */
+  focusTool?: ToolFocus | null;
 }
 
-export default function SettingsPanel({ tab: tabProp, onTabChange, reloadKey = 0, ...folderProps }: Props) {
+export default function SettingsPanel({ tab: tabProp, onTabChange, reloadKey = 0, focusTool = null, ...folderProps }: Props) {
   const [ownTab, setOwnTab] = useState<SettingsTab>("general");
   const [status, setStatus] = useState<SaveStatus>("idle");
   const requested = tabProp ?? ownTab;
@@ -139,6 +153,7 @@ export default function SettingsPanel({ tab: tabProp, onTabChange, reloadKey = 0
   return (
     <div className="sop-panel settings-panel">
       <div className="sop-panel-header">
+        <SidebarButton />
         <h2 className="sop-panel-title">Settings</h2>
         <div className="sop-panel-toolbar">
           {status !== "idle" && (
@@ -166,7 +181,7 @@ export default function SettingsPanel({ tab: tabProp, onTabChange, reloadKey = 0
         </nav>
 
         <div className="sop-panel-body settings-page" key={tab}>
-          <SettingsPage tab={tab} reloadKey={reloadKey} onStatus={setStatus} folderProps={folderProps} />
+          <SettingsPage tab={tab} reloadKey={reloadKey} onStatus={setStatus} folderProps={folderProps} focusTool={focusTool} />
         </div>
       </div>
     </div>
@@ -178,13 +193,17 @@ function SettingsPage({
   reloadKey,
   onStatus,
   folderProps,
+  focusTool,
 }: {
   tab: SettingsTab;
   reloadKey: number;
   onStatus: (status: SaveStatus) => void;
   folderProps: FolderProps;
+  focusTool: ToolFocus | null;
 }) {
   switch (tab) {
+    case "tools":
+      return <div className="settings-body"><ToolsSection focus={focusTool} /></div>;
     case "models":
       return <ModelsPage key={reloadKey} onStatus={onStatus} />;
     case "agents":
@@ -195,34 +214,75 @@ function SettingsPage({
       return <div className="settings-body"><McpServersSection /></div>;
     case "search":
       return <div className="settings-body"><RetrievalSection /></div>;
-    case "integrations":
+    case "usage":
       return (
         <div className="settings-body">
-          <section className="settings-section" aria-labelledby="settings-integrations-title">
-            <div className="settings-section-head">
-              <h3 className="settings-section-title" id="settings-integrations-title">
-                Integrations <span className="settings-source settings-soon">Coming later</span>
-              </h3>
-            </div>
-            <p className="settings-placeholder">
-              Connections to the apps and services you use will be managed here. Nothing to set up yet.
-            </p>
-          </section>
+          <React.Suspense
+            fallback={
+              <section className="settings-section" aria-labelledby="settings-usage-title">
+                <div className="settings-section-head">
+                  <h3 className="settings-section-title" id="settings-usage-title">Usage</h3>
+                </div>
+                <p className="settings-placeholder">Loading usage…</p>
+              </section>
+            }
+          >
+            <UsageSection onStatus={onStatus} />
+          </React.Suspense>
         </div>
+      );
+    case "integrations":
+      return (
+        <div className="settings-body"><IntegrationsSection /></div>
       );
     default:
       return (
         <div className="settings-body">
+          <ProfileSection onStatus={onStatus} />
           <section className="settings-section" aria-labelledby="settings-appearance-title">
             <div className="settings-section-head">
               <h3 className="settings-section-title" id="settings-appearance-title">Appearance</h3>
             </div>
             <ThemeSetting />
+            <TableSetting />
           </section>
           <FoldersSection {...folderProps} />
         </div>
       );
   }
+}
+
+/**
+ * Nothing to manage yet: the same header and toolbar as Skills and MCP servers, switched off, so the
+ * three pages read as one family and the controls don't move when switching between them.
+ */
+function IntegrationsSection() {
+  const [view, setView] = useState<SettingsListView>("list");
+  return (
+    <section className="settings-section" aria-labelledby="settings-integrations-title">
+      <SettingsListHeader
+        id="settings-integrations-title"
+        title="Integrations"
+        description="Connections to the apps and services you use, managed in one place."
+        query=""
+        onQueryChange={() => {}}
+        searchPlaceholder="Search integrations…"
+        searchLabel="Search integrations"
+        view={view}
+        onViewChange={setView}
+        disabled
+        primary={{ label: "Coming soon", icon: Plus, disabled: true, title: "Integrations aren't available yet" }}
+      />
+      <div className="sop-panel-zero settings-list-zero">
+        <Blocks size={32} className="sop-panel-zero-icon" aria-hidden="true" />
+        <p>Integrations are on the way.</p>
+        <p className="sop-panel-zero-sub">
+          You'll connect the apps and services you use here. There's nothing to set up yet; until then, MCP servers
+          are the way to give Rye new tools.
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function ModelsPage({ onStatus }: { onStatus: (status: SaveStatus) => void }) {
@@ -611,6 +671,75 @@ const CATEGORIZE_BATCH = 25;
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+const USER_NAME_MAX = 60;
+
+/** The user's name; saves when the field loses focus or on Enter, with the status in the panel header. */
+function ProfileSection({ onStatus }: { onStatus: (status: SaveStatus) => void }) {
+  const profile = useUserProfile();
+  const [draft, setDraft] = useState<string | null>(null);
+  const [status, setStatus] = useState<SaveStatus>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const value = draft ?? profile.name;
+
+  useEffect(() => {
+    if (status !== "saved") return;
+    const timer = window.setTimeout(() => setStatus("idle"), 1800);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+  useEffect(() => { onStatus(status); }, [status, onStatus]);
+  useEffect(() => () => onStatus("idle"), [onStatus]);
+
+  async function save() {
+    if (draft === null) return;
+    if (draft.trim() === profile.name) return setDraft(null);
+    setStatus("saving");
+    setError(null);
+    try {
+      await saveUserName(draft);
+      setDraft(null);
+      setStatus("saved");
+    } catch (err) {
+      setError(errorText(err));
+      setStatus("idle");
+    }
+  }
+
+  return (
+    <section className="settings-section" aria-labelledby="settings-profile-title">
+      <div className="settings-section-head">
+        <h3 className="settings-section-title" id="settings-profile-title">Profile</h3>
+      </div>
+      <div className="settings-task-list">
+        <form
+          className="settings-task settings-profile"
+          onSubmit={(e) => { e.preventDefault(); void save(); }}
+        >
+          <label className="settings-task-text" htmlFor="settings-user-name">
+            <span className="settings-task-name">Your name</span>
+            <span className="settings-task-desc">Rye uses it to greet you and to know who it's talking to.</span>
+          </label>
+          <input
+            id="settings-user-name"
+            className="form-input"
+            value={value}
+            maxLength={USER_NAME_MAX}
+            placeholder={profile.loaded ? "Add your name" : "Loading…"}
+            disabled={!profile.loaded}
+            autoComplete="name"
+            spellCheck={false}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "settings-user-name-error" : undefined}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => void save()}
+            onKeyDown={(e) => { if (e.key === "Escape" && draft !== null) { setDraft(null); setError(null); } }}
+          />
+        </form>
+      </div>
+      {error && <p className="settings-decision-status is-missing" id="settings-user-name-error" role="alert">{error}</p>}
+    </section>
+  );
 }
 
 function FoldersSection({ folders, chats, onCreateFolder, onMoveChats }: FolderProps) {

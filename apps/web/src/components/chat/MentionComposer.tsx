@@ -153,6 +153,40 @@ function placeCaretAfter(node: Node) {
   sel.addRange(range);
 }
 
+/*
+ * Edits made by changing the DOM directly never reach the browser's undo history, so a later
+ * Cmd/Ctrl+Z replays its own steps against text that has moved and scrambles the draft. Every edit
+ * the composer makes itself (paste, Shift+Enter, turning @slug into a pill) goes through
+ * execCommand instead, which records it as one undo step. execCommand is deprecated but is still
+ * the only way to edit a contentEditable undoably; each caller keeps a direct-DOM fallback for a
+ * browser that refuses it.
+ */
+
+/** Markup for a fragment, as insertHTML wants it. */
+function fragmentHtml(frag: DocumentFragment): string {
+  const box = document.createElement("div");
+  box.appendChild(frag);
+  return box.innerHTML;
+}
+
+/** Replace the selection with markup as one undoable edit; false if the browser refused. */
+function insertHtmlUndoable(html: string): boolean {
+  try {
+    return document.execCommand("insertHTML", false, html);
+  } catch {
+    return false;
+  }
+}
+
+/** Insert a line break at the caret as one undoable edit; false if the browser refused. */
+function insertLineBreakUndoable(): boolean {
+  try {
+    return document.execCommand("insertLineBreak");
+  } catch {
+    return false;
+  }
+}
+
 interface Props {
   value: string;
   onChange: (value: string) => void;
@@ -160,6 +194,12 @@ interface Props {
   placeholder: string;
   ariaLabel: string;
   autoFocusTrigger?: unknown;
+  /** Escape (with no tag suggestions open) calls this, e.g. to leave the inline message editor. */
+  onCancel?: () => void;
+  /** Classes for the editable field; the chat composer's by default. */
+  className?: string;
+  /** Files pasted into the field (a screenshot, files copied in Finder). Without it, pasting files does nothing. */
+  onPasteFiles?: (files: File[]) => void;
 }
 
 export default function MentionComposer({
@@ -169,6 +209,9 @@ export default function MentionComposer({
   placeholder,
   ariaLabel,
   autoFocusTrigger,
+  onCancel,
+  className = "chat-input",
+  onPasteFiles,
 }: Props) {
   const { agents, agentBySlug } = useAgents();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -201,6 +244,10 @@ export default function MentionComposer({
     if (!el) return;
     const agentsJustLoaded =
       lastHydratedAgentCountRef.current === 0 && agentBySlug.size > 0 && value.includes("@");
+    // Note that the agents have loaded even when nothing is redrawn now. Otherwise the first "@" typed
+    // or pasted later looks like "agents just loaded" and redraws the field, which moves the caret to
+    // the end and leaves the browser's undo history pointing at nodes that are gone.
+    lastHydratedAgentCountRef.current = agentBySlug.size;
     if (value === lastEmittedRef.current && !agentsJustLoaded) return;
 
     lastEmittedRef.current = value;
@@ -244,6 +291,26 @@ export default function MentionComposer({
 
       const parent = textNode.parentNode;
       if (!parent) return;
+
+      // Undoably: select the typed "@query" and replace it with the pill (see insertHtmlUndoable).
+      const current = window.getSelection();
+      if (current) {
+        const typed = document.createRange();
+        typed.setStart(textNode, atOffset);
+        typed.setEnd(textNode, endOffset);
+        current.removeAllRanges();
+        current.addRange(typed);
+        const replacement = document.createDocumentFragment();
+        replacement.appendChild(createMentionPillNode(agent));
+        replacement.appendChild(document.createTextNode(trailingChar));
+        if (insertHtmlUndoable(fragmentHtml(replacement))) {
+          setActiveQuery(null);
+          setMentionIndex(0);
+          setDismissed(false);
+          emitChange();
+          return;
+        }
+      }
 
       const frag = document.createDocumentFragment();
       if (before) frag.appendChild(document.createTextNode(before));
@@ -352,6 +419,12 @@ export default function MentionComposer({
       }
     }
 
+    if (e.key === "Escape" && onCancel) {
+      e.preventDefault();
+      onCancel();
+      return;
+    }
+
     // Enter sends; Shift+Enter inserts newline
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -364,6 +437,10 @@ export default function MentionComposer({
       const sel = window.getSelection();
       const el = editorRef.current;
       if (!sel || sel.rangeCount === 0 || !el) return;
+      if (insertLineBreakUndoable()) {
+        emitChange();
+        return;
+      }
       const range = sel.getRangeAt(0);
       range.deleteContents();
       const br = document.createElement("br");
@@ -385,16 +462,24 @@ export default function MentionComposer({
 
   function handlePaste(e: React.ClipboardEvent<HTMLDivElement>) {
     e.preventDefault();
+    const files = Array.from(e.clipboardData.files);
+    if (files.length > 0 && onPasteFiles) {
+      onPasteFiles(files);
+      return;
+    }
     const text = e.clipboardData.getData("text/plain");
     if (!text) return;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    const frag = buildNodesFromText(text, agentBySlug);
-    const lastInserted = frag.lastChild;
-    range.insertNode(frag);
-    if (lastInserted) placeCaretAfter(lastInserted);
+    // One undo step for the whole paste (see insertHtmlUndoable); the editor is pre-wrap, so spacing survives.
+    if (!insertHtmlUndoable(fragmentHtml(buildNodesFromText(text, agentBySlug)))) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const frag = buildNodesFromText(text, agentBySlug);
+      const lastInserted = frag.lastChild;
+      range.insertNode(frag);
+      if (lastInserted) placeCaretAfter(lastInserted);
+    }
     emitChange();
     refreshQuery();
   }
@@ -439,7 +524,7 @@ export default function MentionComposer({
 
       <div
         ref={editorRef}
-        className="chat-input chat-input--rich"
+        className={`${className} chat-input--rich`}
         contentEditable
         suppressContentEditableWarning
         role="textbox"

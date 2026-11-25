@@ -13,7 +13,6 @@ import {
   MoreHorizontal,
   Pencil,
   FilePlus,
-  Upload,
   Download,
   Trash2,
   Copy,
@@ -27,6 +26,10 @@ import { useSkills, skillApi, jsonInit, type Skill } from "../../contexts/SkillC
 import SkillChatSheet from "./SkillChatSheet";
 import NewSkillModal from "./NewSkillModal";
 import InstallSkillModal from "./InstallSkillModal";
+import SettingsListHeader from "../settings/SettingsListHeader";
+import SidebarButton from "../shell/SidebarButton";
+import MobileListControls, { PullToRefresh, SheetOptions } from "../shared/MobileListControls";
+import { useIsMobile } from "../../utils/viewport";
 
 type ViewMode = "card" | "list";
 type SortField = "title" | "source" | "updatedAt";
@@ -177,6 +180,7 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
   const [notice, setNotice] = useState<string | null>(null);
   const [openFile, setOpenFile] = useState<{ path: string; content?: string; error?: string } | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const isMobile = useIsMobile();
   // Ignores a slow detail fetch that finishes after the user opened another skill.
   const openSeq = useRef(0);
 
@@ -406,6 +410,7 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
       <div className={`sop-panel${embedded ? " settings-skill-detail" : ""}`}>
         {deleteModal}
         <div className="sop-panel-header sop-panel-header--detail">
+          {!embedded && <SidebarButton />}
           <button
             className="sop-header-icon-btn"
             onClick={closeDetail}
@@ -543,6 +548,7 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
         <NewSkillModal
           onCreated={handleCreated}
           onInstall={() => { setHandoff(true); setCreating(false); setInstalling(true); }}
+          onImport={() => { importRef.current?.click(); setCreating(false); }}
           onClose={() => setCreating(false)}
           animateIn={!handoff}
         />
@@ -557,6 +563,61 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
       )}
       {/* With a skill open, its detail view draws this modal instead. */}
       {!activeSkill && deleteModal}
+    </>
+  );
+
+  const startCreate = () => { setHandoff(false); setCreating(true); };
+
+  // Refresh and import, shared by the panel's toolbar and the Settings page header.
+  const toolbarActions = (
+    <>
+      <button
+        className="icon-btn faint"
+        onClick={() => void refreshSkills()}
+        disabled={skillsLoading}
+        title="Refresh"
+        aria-label="Refresh Skills"
+      >
+        <RefreshCw size={13} className={skillsLoading ? "spin" : ""} />
+      </button>
+      {/* Import is an option in the New Skill dialog; this is the file chooser it opens. */}
+      <input
+        ref={importRef}
+        type="file"
+        accept=".md,.json"
+        style={{ display: "none" }}
+        onChange={handleImport}
+      />
+    </>
+  );
+
+  // Phone width: sort and import live in the filter sheet (MobileListControls); the file input stays mounted for it.
+  const sortChanged = sortField !== "title" || sortDir !== "asc";
+  const resetSort = () => { setSortField("title"); setSortDir("asc"); };
+  const mobileImportInput = isMobile && (
+    <input ref={importRef} type="file" accept=".md,.json" style={{ display: "none" }} onChange={handleImport} />
+  );
+  const mobileSort = (
+    <>
+      <SheetOptions
+        label="Sort by"
+        value={sortField}
+        onChange={setSortField}
+        options={[
+          { value: "title", label: "Name" },
+          { value: "source", label: "Source" },
+          { value: "updatedAt", label: "Updated" },
+        ]}
+      />
+      <SheetOptions
+        label="Order"
+        value={sortDir}
+        onChange={setSortDir}
+        options={[
+          { value: "asc", label: sortField === "updatedAt" ? "Oldest first" : "A to Z" },
+          { value: "desc", label: sortField === "updatedAt" ? "Newest first" : "Z to A" },
+        ]}
+      />
     </>
   );
 
@@ -585,33 +646,8 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
           >
             <List size={14} />
           </button>
-          <button
-            className="icon-btn faint"
-            onClick={() => void refreshSkills()}
-            disabled={skillsLoading}
-            title="Refresh"
-          >
-            <RefreshCw size={13} className={skillsLoading ? "spin" : ""} />
-          </button>
-          <div className="sop-toolbar-divider" />
-          <button
-            className="icon-btn faint"
-            onClick={() => importRef.current?.click()}
-            title="Import Skill (.md or .json)"
-          >
-            <Upload size={14} />
-          </button>
-          <input
-            ref={importRef}
-            type="file"
-            accept=".md,.json"
-            style={{ display: "none" }}
-            onChange={handleImport}
-          />
-          <button
-            className="sop-new-btn"
-            onClick={() => { setHandoff(false); setCreating(true); }}
-          >
+          {toolbarActions}
+          <button className="sop-new-btn" onClick={startCreate}>
             <FilePlus size={13} />
             New Skill
           </button>
@@ -674,7 +710,7 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
                 <tr>
                   {sortHeader("title", "Name", " sop-table-th--name")}
                   {sortHeader("source", "Source")}
-                  {sortHeader("updatedAt", "Updated")}
+                  {sortHeader("updatedAt", "Updated", " sop-table-col--secondary")}
                   <th className="sop-table-th sop-table-th--action" />
                 </tr>
               </thead>
@@ -690,7 +726,7 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
                         {skill.source === "installed" ? <SkillBadges skill={skill} /> : <>Rye <SkillBadges skill={skill} /></>}
                       </span>
                     </td>
-                    <td className="sop-table-td">{formatDate(skill.updatedAt)}</td>
+                    <td className="sop-table-td sop-table-col--secondary">{formatDate(skill.updatedAt)}</td>
                     <td className="sop-table-td sop-table-td--action" onClick={(e) => e.stopPropagation()}>
                       <SkillMenu
                         skill={skill}
@@ -717,15 +753,25 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
           aria-hidden={activeSkill ? true : undefined}
         >
           {modals}
-          <div className="settings-section-bar">
-            <div className="settings-section-head">
-              <h3 className="settings-section-title" id="settings-skills-title">Skills</h3>
-              <p className="settings-section-desc">
-                Reusable instructions and scripts the agent loads when a task calls for them.
-              </p>
-            </div>
-            {toolbar}
-          </div>
+          <SettingsListHeader
+            id="settings-skills-title"
+            title="Skills"
+            description="Reusable instructions and scripts the agent loads when a task calls for them."
+            query={query}
+            onQueryChange={setQuery}
+            searchPlaceholder="Search Skills…"
+            searchLabel="Search Skills"
+            view={viewMode}
+            onViewChange={setViewMode}
+            actions={toolbarActions}
+            primary={{ label: "New Skill", icon: FilePlus, onClick: startCreate }}
+            mobileFilters={mobileSort}
+            mobileActiveFilters={sortChanged ? 1 : 0}
+            onResetFilters={resetSort}
+            onRefresh={refreshSkills}
+            mobileHidden={activeSkill !== null}
+          />
+          {mobileImportInput}
           {!activeSkill && noticeBar}
           {results}
         </section>
@@ -738,13 +784,45 @@ export default function SkillPanel({ embedded = false }: { embedded?: boolean } 
     <div className="sop-panel">
       {modals}
       <div className="sop-panel-header">
+        <SidebarButton />
         <h2 className="sop-panel-title">Skills</h2>
-        {toolbar}
+        {isMobile ? (
+          <button type="button" className="sop-new-btn mlc-primary" onClick={startCreate}>
+            <FilePlus size={15} aria-hidden="true" />
+            New Skill
+          </button>
+        ) : (
+          toolbar
+        )}
       </div>
       {noticeBar}
+      {mobileImportInput}
 
       <div className="sop-panel-body">
+        <PullToRefresh onRefresh={refreshSkills} />
         {results}
+        <MobileListControls
+          query={query}
+          onQueryChange={setQuery}
+          searchLabel="Search Skills"
+          searchPlaceholder="Search Skills…"
+          filters={
+            <>
+              <SheetOptions
+                label="View"
+                value={viewMode}
+                onChange={setViewMode}
+                options={[
+                  { value: "list", label: "List", icon: List },
+                  { value: "card", label: "Cards", icon: LayoutGrid },
+                ]}
+              />
+              {mobileSort}
+            </>
+          }
+          activeFilters={sortChanged ? 1 : 0}
+          onResetFilters={resetSort}
+        />
       </div>
     </div>
   );

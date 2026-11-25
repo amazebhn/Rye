@@ -19,9 +19,13 @@ import type { AgentRecord } from "../../utils/types";
 import AgentAvatar, { AgentBanner, formatToolGroup } from "./AgentAvatar";
 import NewAgentModal from "./NewAgentModal";
 import AgentChatSheet from "./AgentChatSheet";
+import Modal, { ModalCancelButton } from "../shared/Modal";
 import AiMark from "../shared/AiMark";
 import { formatReferencesForMarkdown } from "../shared/MarkdownEditor";
 import { formatModelName } from "../../utils/modelNames";
+import SidebarButton from "../shell/SidebarButton";
+import MobileListControls, { PullToRefresh, SheetOptions } from "../shared/MobileListControls";
+import { useIsMobile } from "../../utils/viewport";
 
 type ViewMode = "card" | "list";
 
@@ -93,6 +97,7 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
   const [chatOpen, setChatOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AgentRecord | null>(null);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (!pendingProfileId || !agents) return;
@@ -124,13 +129,50 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
     if (activeAgent?.id === agent.id) setActiveAgent(agent);
   }
 
-  async function handleDelete(id: string) {
-    await deleteAgent(id);
-    if (activeAgent?.id === id) {
-      setActiveAgent(null);
-      setChatOpen(false);
+  // Deleting can't be undone, so the menus only ask; the dialog below does it.
+  const [confirmDelete, setConfirmDelete] = useState<AgentRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  function handleDelete(id: string) {
+    const agent = (agents ?? []).find((a) => a.id === id);
+    if (agent) setConfirmDelete(agent);
+  }
+
+  async function confirmDeleteAgent() {
+    if (!confirmDelete || deleting) return;
+    const id = confirmDelete.id;
+    setDeleting(true);
+    try {
+      await deleteAgent(id);
+      if (activeAgent?.id === id) {
+        setActiveAgent(null);
+        setChatOpen(false);
+      }
+      setConfirmDelete(null);
+    } finally {
+      setDeleting(false);
     }
   }
+
+  const deleteDialog = confirmDelete && (
+    <Modal
+      title={`Delete ${confirmDelete.name}?`}
+      description={`@${confirmDelete.slug} is removed with its instructions and settings. Its chats stay in your chat list. This can't be undone.`}
+      className="modal--compact"
+      onClose={() => { if (!deleting) setConfirmDelete(null); }}
+      lockBackdrop={deleting}
+      footer={
+        <>
+          <ModalCancelButton autoFocus />
+          <button type="button" className="btn btn--danger btn--sm" disabled={deleting} onClick={() => void confirmDeleteAgent()}>
+            {deleting ? "Deleting…" : "Delete agent"}
+          </button>
+        </>
+      }
+    >
+      {null}
+    </Modal>
+  );
 
   const filtered = (agents ?? []).filter((a) => {
     const q = query.trim().toLowerCase();
@@ -156,6 +198,7 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
         )}
 
         <div className="sop-panel-header sop-panel-header--detail">
+          <SidebarButton />
           <button
             className="sop-header-icon-btn"
             onClick={() => { setActiveAgent(null); setChatOpen(false); }}
@@ -169,7 +212,7 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
             <h2 className="sop-panel-title sop-detail-title" style={{ flex: "0 1 auto" }}>
               {resolvedActive.name}
             </h2>
-            <span style={{ fontSize: 12, color: "var(--main-fg-faint)" }}>@{resolvedActive.slug}</span>
+            <span className="agent-header-slug" style={{ fontSize: 12, color: "var(--main-fg-faint)" }}>@{resolvedActive.slug}</span>
           </div>
 
           <button
@@ -264,6 +307,7 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
           onClose={() => setCreating(false)}
         />
       )}
+      {deleteDialog}
       {editing && (
         <NewAgentModal
           initial={editing}
@@ -273,8 +317,14 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
       )}
 
       <div className="sop-panel-header">
+        <SidebarButton />
         <h2 className="sop-panel-title">Agents</h2>
-        <div className="sop-panel-toolbar">
+        {isMobile ? (
+          <button type="button" className="sop-new-btn mlc-primary" onClick={() => setCreating(true)}>
+            <Plus size={15} aria-hidden="true" />
+            New Agent
+          </button>
+        ) : <div className="sop-panel-toolbar">
           <div className="sop-search-wrap">
             <Search size={13} className="sop-search-icon" />
             <input
@@ -311,10 +361,11 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
             <Plus size={13} />
             New Agent
           </button>
-        </div>
+        </div>}
       </div>
 
       <div className="sop-panel-body">
+        <PullToRefresh onRefresh={refreshAgents} />
         {agentsLoading && agents === null && <div className="sop-panel-empty">Loading…</div>}
 
         {!agentsLoading && (agents?.length ?? 0) === 0 && (
@@ -375,45 +426,66 @@ export default function AgentPanel({ onOpenAgentChat }: Props) {
               ))}
             </div>
           ) : (
-            <table className="sop-table">
+            <table className="sop-table sop-table--agents">
               <thead>
                 <tr>
                   <th className="sop-table-th sop-table-th--name">Agent</th>
                   <th className="sop-table-th">Description</th>
-                  <th className="sop-table-th">Updated</th>
+                  <th className="sop-table-th sop-table-th--date">Updated</th>
                   <th className="sop-table-th sop-table-th--action" />
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((agent) => (
-                  <tr key={agent.id} className="sop-table-row" onClick={() => openAgent(agent)}>
-                    <td className="sop-table-td sop-table-td--name">
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                        <AgentAvatar agent={agent} size="sm" />
-                        <span>{agent.name}</span>
-                        <span style={{ fontSize: 11.5, color: "var(--main-fg-faint)", fontWeight: 400 }}>
-                          @{agent.slug}
+                {filtered.map((agent) => {
+                  // Two lines are shown; the cap only keeps a long instructions fallback out of the DOM.
+                  const summary = (agent.description || agent.instructions.replace(/^#+\s.*/gm, "").trim()).slice(0, 400);
+                  return (
+                    <tr key={agent.id} className="sop-table-row" onClick={() => openAgent(agent)}>
+                      <td className="sop-table-td sop-table-td--name">
+                        <span className="agent-table-name" title={`${agent.name} (@${agent.slug})`}>
+                          <AgentAvatar agent={agent} size="sm" />
+                          <span className="agent-table-label">
+                            <span className="agent-table-name-text">{agent.name}</span>
+                            <span className="agent-table-slug">@{agent.slug}</span>
+                          </span>
                         </span>
-                      </span>
-                    </td>
-                    <td className="sop-table-td" style={{ color: "var(--main-fg-muted)" }}>
-                      {(agent.description || agent.instructions.replace(/^#+\s.*/gm, "").trim()).slice(0, 90)}
-                    </td>
-                    <td className="sop-table-td" style={{ whiteSpace: "nowrap", color: "var(--main-fg-faint)" }}>
-                      {formatDate(agent.updated_at)}
-                    </td>
-                    <td className="sop-table-td" style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                      <AgentMenu
-                        onOpenChat={() => onOpenAgentChat(agent)}
-                        onEdit={() => setEditing(agent)}
-                        onDelete={() => void handleDelete(agent.id)}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="sop-table-td">
+                        <span className="agent-table-desc" title={summary}>{summary}</span>
+                      </td>
+                      <td className="sop-table-td agent-table-date">
+                        {formatDate(agent.updated_at)}
+                      </td>
+                      <td className="sop-table-td" style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        <AgentMenu
+                          onOpenChat={() => onOpenAgentChat(agent)}
+                          onEdit={() => setEditing(agent)}
+                          onDelete={() => void handleDelete(agent.id)}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ))}
+        <MobileListControls
+          query={query}
+          onQueryChange={setQuery}
+          searchLabel="Search agents"
+          searchPlaceholder="Search agents…"
+          filters={
+            <SheetOptions
+              label="View"
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: "card", label: "Cards", icon: LayoutGrid },
+                { value: "list", label: "List", icon: List },
+              ]}
+            />
+          }
+        />
       </div>
     </div>
   );

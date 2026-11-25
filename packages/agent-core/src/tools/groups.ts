@@ -14,7 +14,7 @@ export const SQL_GROUP = "sql";
 /** Former group ids → current ones. The SQL group was "mysql" when MySQL was the only engine. */
 export const GROUP_ALIASES: Record<string, string> = { mysql: SQL_GROUP };
 export const LOAD_TOOLS_TOOL_NAME = "load_tools_tool";
-const MCP_GROUP_PREFIX = "mcp:";
+export const MCP_GROUP_PREFIX = "mcp:";
 
 export interface ToolGroup {
   id: string;
@@ -73,6 +73,7 @@ const STATIC_GROUPS: Array<{ id: string; description: string; tools: string[] }>
   },
   { id: "results", description: "query/aggregate stored results (res_…)", tools: ["result_query_tool", "result_aggregate_tool"] },
   { id: "chats", description: "search and read the user's earlier conversations with Rye", tools: ["search_chats_tool", "read_chat_tool"] },
+  { id: "attachments", description: "read files the user attached to messages again (images, PDFs, text files)", tools: ["read_attachment_tool"] },
   { id: "sop_authoring", description: "save or update SOPs", tools: ["save_sop_tool"] },
   { id: "skills", description: "create or update Rye-owned Skills", tools: ["save_skill_tool"] },
   { id: "agents", description: "create or update custom Agents", tools: ["save_agent_tool"] },

@@ -29,10 +29,11 @@ import { knowledgeRoutes } from "./knowledge/routes.js";
 import { AgentStore, type AgentDefinition } from "./agents/store.js";
 import { agentRoutes } from "./agents/routes.js";
 import { speechRoutes } from "./speech/routes.js";
+import { profileRoutes } from "./profile/routes.js";
 import { LEGACY_MYSQL_NAME, engineName, listConnections } from "./db/connections.js";
 import { driverFor, errorText } from "./db/drivers.js";
 import { readAgentSettings, chattinessPolicy } from "./agents/settings.js";
-import { pickAutoRoutedAgent, pickFollowUpAgent, type RecentTurn } from "./agents/router.js";
+import { pickAutoRoutedAgent, pickFollowUpAgent, pickTaggedAgent, type RecentTurn } from "./agents/router.js";
 import { ChatStore } from "./chat/store.js";
 import { ChatFolderStore } from "./chat/folders.js";
 import { chatFolderRoutes } from "./chat/folder-routes.js";
@@ -70,8 +71,16 @@ import type { RewindTurn } from "./agent/loop.js";
 import { turnMessage } from "./agent/continue.js";
 import { editSuggestionKey, getCachedEditSuggestions, setCachedEditSuggestions } from "./edit-suggestions/cache.js";
 import { resolveTaskModelId, resolveTierModelId } from "./model-tiers.js";
-import { getPendingDraft, clearPendingDraft, setAgentStore, setChatStore } from "./tools/index.js";
-import { getSettings, settings, CONFIG_FILE, getEffectiveSettings, getActiveEnv, setActiveEnv, setRuntimeModel, MODEL_TIERS, MODEL_SETTINGS_FILE, ModelOverridesSchema, readModelOverrides, writeModelOverrides } from "./config.js";
+import { getPendingDraft, clearPendingDraft, setAgentStore, setAttachmentStore, setChatStore } from "./tools/index.js";
+import { AttachmentStore, isAttachmentId, type Attachment } from "./chat/attachments.js";
+import { attachmentRoutes } from "./chat/attachment-routes.js";
+import { ollamaImageDescriber } from "./chat/describe-image.js";
+import { parseContextRefs } from "./agent/references.js";
+import { CORE_GROUP, getToolGroups, LOAD_TOOLS_TOOL_NAME } from "./tools/groups.js";
+import { groupTitle, toolTitle } from "./tools/titles.js";
+import { toolGroupReport } from "./tools/availability.js";
+import { discoverRepos } from "./tools/code-search.js";
+import { getSettings, settingsForEnv, settings, CONFIG_FILE, getEffectiveSettings, getActiveEnv, setActiveEnv, setRuntimeModel, MODEL_TIERS, MODEL_SETTINGS_FILE, ModelOverridesSchema, readModelOverrides, writeModelOverrides } from "./config.js";
 import type { LlmProvider, ModelOverrides } from "./config.js";
 import { CLEF_MODELS, clefTarget, ollamaDecisionModelsOrEmpty, resolveDecisionModelId, warmOllamaDecisionModel } from "./decision/index.js";
 import { listOllamaModels, probeEmbeddingModel, sameModel } from "./embeddings/models.js";
@@ -107,6 +116,26 @@ setAgentStore(agentStore);
 const chatStore = new ChatStore();
 setChatStore(chatStore);
 const chatFolderStore = new ChatFolderStore();
+
+// Files attached to messages. Images are described by a local vision model in the background, and those
+// descriptions (with file names and the start of PDF/text content) make the messages findable in search.
+const attachmentStore = new AttachmentStore(undefined, { captioner: ollamaImageDescriber() });
+setAttachmentStore(attachmentStore);
+chatStore.attachmentText = (id) => attachmentStore.searchText(id);
+attachmentStore.onDescribed = (att) => chatStore.refreshAttachmentText(att.id);
+// Uploads no message refers to (never sent, or their chat was deleted) go after a day.
+const pruneAttachments = () => {
+  try {
+    const removed = attachmentStore.prune(chatStore.referencedAttachmentIds());
+    if (removed > 0) console.log(`[${new Date().toISOString()}] [attachments] removed ${removed} unused attachment(s)`);
+  } catch (err) {
+    console.warn("[attachments] prune failed:", err);
+  }
+};
+(setTimeout(pruneAttachments, 60_000) as { unref?: () => void }).unref?.();
+(setInterval(pruneAttachments, 60 * 60 * 1000) as { unref?: () => void }).unref?.();
+// Images saved while no vision model was available get described once one is.
+for (const id of attachmentStore.undescribed()) attachmentStore.describeLater(id);
 
 // Shared usage tracking store instance
 const usageStore = new UsageStore();
@@ -261,15 +290,37 @@ app.post("/chat/", async (c) => {
     rewind?: unknown;
     env?: string;
     agent_id?: string;
+    // Ids of files uploaded to /chat/attachments/ for this message.
+    attachments?: unknown;
+    // SOPs and tools the user pointed this message at: [{type: "sop", id}, {type: "tool", name}].
+    references?: unknown;
   }>();
+  const refs = parseContextRefs(body.references);
+  if (refs === null) return c.json({ error: "references must be up to 10 {type: \"sop\", id} or {type: \"tool\", name} items" }, 400);
 
   const sessionId = body.session_id ?? crypto.randomUUID();
-  const message = turnMessage(body);
+  let attached: Attachment[] = [];
+  if (body.attachments !== undefined) {
+    if (!Array.isArray(body.attachments) || body.attachments.length > 10 || !body.attachments.every(isAttachmentId)) {
+      return c.json({ error: "attachments must be up to 10 attachment ids" }, 400);
+    }
+    attached = body.attachments.map((id) => attachmentStore.get(id)).filter((a): a is Attachment => a !== null);
+    if (attached.length !== body.attachments.length) return c.json({ error: "Unknown attachment" }, 400);
+  }
+  // A message may be only attachments or references.
+  const message = turnMessage(body) ?? ((attached.length > 0 || refs.length > 0) && !body.continue ? "" : undefined);
   if (message === undefined) return c.json({ error: "message is required" }, 400);
 
   const isDedicatedAgentChat = Boolean(body.agent_id);
+  // The AI create/edit chats for SOPs, Skills and Agents (they send a system prompt suffix). They are Rye
+  // doing an authoring job: never routed to a custom agent (an "@gleep" in an agent being edited is its name,
+  // not a tag), and run on the "SOP & Skill capture" model from Settings unless one was picked in the chat itself.
+  const isAuthoring = typeof body.system_prompt_suffix === "string" && body.system_prompt_suffix.trim() !== "";
+  const turnModel = body.model || (isAuthoring ? await resolveTaskModelId(getSettings(), "extraction") : undefined);
   const allAgents = agentStore.list();
   const collabSettings = readAgentSettings();
+  // Agents may tag each other to hand over, wherever replies from other agents are allowed.
+  const handOffs = !isDedicatedAgentChat && !isAuthoring && collabSettings.allowAgentReplies && allAgents.length > 0;
 
   // Extract recent turns from persisted chat history (for decision-model routing context)
   const existingChat = chatStore.getBySession(sessionId);
@@ -289,9 +340,8 @@ app.post("/chat/", async (c) => {
     });
 
   // Resolve active agent: explicit agent_id → @slug mention → optional decision-model auto-routing
-  let activeAgent: AgentDefinition | null = body.agent_id
-    ? agentStore.get(body.agent_id)
-    : (agentStore.resolveMentions(message)[0] ?? null);
+  const userTagged = body.agent_id || isAuthoring ? [] : agentStore.resolveMentions(message);
+  let activeAgent: AgentDefinition | null = body.agent_id ? agentStore.get(body.agent_id) : (userTagged[0] ?? null);
 
   const turnId = TurnIdSchema.safeParse(body.turn_id);
   if (!turnId.success) return c.json({ error: "Invalid turn_id" }, 400);
@@ -333,6 +383,9 @@ app.post("/chat/", async (c) => {
       agent: AgentDefinition | null,
       emitDone: boolean,
       currentTurnId?: string,
+      // The user's files belong to their own message; follow-up agents can still read them by id.
+      turnAttachments: Attachment[] = [],
+      turnRefs: typeof refs = [],
     ): Promise<{ text: string; stoppedEarly: boolean; finalSessionId: string }> => {
       let text = "";
       let stoppedEarly = false;
@@ -345,10 +398,13 @@ app.post("/chat/", async (c) => {
         memoryStore,
         body.system_prompt_suffix,
         skillStore,
-        body.model,
+        turnModel,
         currentTurnId,
         knowledgeStore,
         agent,
+        handOffs ? allAgents : undefined,
+        { store: attachmentStore, items: turnAttachments },
+        turnRefs,
       )) {
         switch (ev.type) {
           case "session":
@@ -409,7 +465,7 @@ app.post("/chat/", async (c) => {
 
     try {
       // Optional decision-model auto-routing for untagged messages in generic chats
-      if (!isDedicatedAgentChat && !activeAgent && !body.continue && collabSettings.autoRoute && allAgents.length > 0) {
+      if (!isDedicatedAgentChat && !isAuthoring && !activeAgent && !body.continue && collabSettings.autoRoute && allAgents.length > 0) {
         activeAgent = await pickAutoRoutedAgent({
           message,
           recentTurns,
@@ -422,14 +478,15 @@ app.post("/chat/", async (c) => {
         await send({ type: "agent", agent_id: activeAgent.id, slug: activeAgent.slug, name: activeAgent.name });
       }
 
-      const canFollowUp =
-        !isDedicatedAgentChat &&
-        !body.continue &&
-        collabSettings.allowAgentReplies &&
-        chattinessPolicy(collabSettings.chattiness).maxHops > 0 &&
-        allAgents.length > 0;
+      // Follow-up replies: an agent tagged in the last reply (or a second agent the user tagged) goes next;
+      // otherwise the decision model may pick one, within the chattiness setting's number of hops.
+      const maxHops = chattinessPolicy(collabSettings.chattiness).maxHops;
+      const queued = userTagged.slice(1);
+      const canFollowUp = handOffs && !body.continue;
+      // Tags always get at least one hand-off, and every agent the user tagged gets its turn.
+      const hopLimit = Math.max(maxHops, queued.length + 1);
 
-      const first = await streamOneTurn(message, activeAgent, !canFollowUp, turnId.data);
+      const first = await streamOneTurn(message, activeAgent, !canFollowUp, turnId.data, attached, refs);
       let lastSessionId = first.finalSessionId;
 
       if (canFollowUp && !first.stoppedEarly && !abort.signal.aborted) {
@@ -440,18 +497,23 @@ app.post("/chat/", async (c) => {
         ];
         let lastSpeakerId: string | null = activeAgent?.id ?? null;
         let lastSpeakerName = activeAgent?.name ?? "Rye";
-        const maxHops = chattinessPolicy(collabSettings.chattiness).maxHops;
 
-        for (let hop = 0; hop < maxHops; hop++) {
+        for (let hop = 0; hop < hopLimit; hop++) {
           if (abort.signal.aborted) break;
-          const nextAgent = await pickFollowUpAgent({
-            recentTurns: convo,
-            lastSpeakerId,
-            agents: allAgents,
-            chattiness: collabSettings.chattiness,
-            hopIndex: hop,
-            signal: abort.signal,
-          });
+          const lastReply = convo[convo.length - 1]?.content ?? "";
+          const tagged = pickTaggedAgent(agentStore.resolveMentions(lastReply), queued, lastSpeakerId);
+          const nextAgent =
+            tagged?.agent ??
+            (hop < maxHops
+              ? await pickFollowUpAgent({
+                  recentTurns: convo,
+                  lastSpeakerId,
+                  agents: allAgents,
+                  chattiness: collabSettings.chattiness,
+                  hopIndex: hop,
+                  signal: abort.signal,
+                })
+              : null);
           if (!nextAgent || abort.signal.aborted) break;
 
           await send({
@@ -461,7 +523,12 @@ app.post("/chat/", async (c) => {
             name: nextAgent.name,
           });
 
-          const handoffPrompt = `[Agent-to-agent follow-up] ${lastSpeakerName} just responded above. Contribute only your specialized perspective, corrections, or additional checks relevant to the user's request — stay concise and don't repeat what was already said.`;
+          const handoffPrompt =
+            tagged?.by === "reply"
+              ? `[Agent hand-off] ${lastSpeakerName} tagged you (@${nextAgent.slug}) in their reply above. Answer what they asked of you, in your own voice — stay concise and don't repeat what was already said.`
+              : tagged?.by === "user"
+                ? `[Agent hand-off] The user tagged you (@${nextAgent.slug}) in their message, and ${lastSpeakerName} has answered above. Now give your own reply to the user's message — stay concise and don't repeat what was already said.`
+                : `[Agent-to-agent follow-up] ${lastSpeakerName} just responded above. Contribute only your specialized perspective, corrections, or additional checks relevant to the user's request — stay concise and don't repeat what was already said.`;
           const follow = await streamOneTurn(handoffPrompt, nextAgent, false);
           lastSessionId = follow.finalSessionId;
           convo.push({ role: "assistant", speaker: nextAgent.name, content: follow.text });
@@ -540,6 +607,35 @@ app.delete("/chat/history/:id", (c) => {
 });
 
 app.route("/chat", chatFolderRoutes(chatStore, chatFolderStore));
+app.route("/chat/attachments/", attachmentRoutes(attachmentStore));
+
+// The tools the user can point a message at (the composer's "Use a tool"), by group. Includes MCP and custom tools.
+// With ?env=<key> (Settings → Tools) each group also says whether it can work in that environment and why,
+// each tool carries its whole description, and configured MCP servers without tools are listed too.
+app.get("/chat/tools", (c) => {
+  const envKey = c.req.query("env");
+  if (envKey !== undefined) {
+    const base = getSettings();
+    const key = envKey.trim() || "default";
+    if (key !== "default" && !base.environments[key]) return c.json({ error: `Unknown environment "${key}"` }, 404);
+    const groups = toolGroupReport(getToolGroups(), {
+      settings: settingsForEnv(base, key === "default" ? null : key),
+      envKey: key,
+      repos: discoverRepos(),
+      mcpServers: mcpServerList().servers,
+    });
+    return c.json({ env: { key, name: key === "default" ? "Default" : base.environments[key]?.name ?? key }, groups });
+  }
+  const groups = getToolGroups().map((g) => ({
+    id: g.id,
+    title: groupTitle(g.id),
+    description: g.id === CORE_GROUP ? "always available" : g.description,
+    tools: g.tools
+      .filter((t) => t.name !== LOAD_TOOLS_TOOL_NAME)
+      .map((t) => ({ name: t.name, title: toolTitle(t.name), description: (t.description ?? "").split(/(?<=\.)\s/)[0].slice(0, 200) })),
+  }));
+  return c.json({ groups: groups.filter((g) => g.tools.length > 0) });
+});
 
 app.delete("/chat/session/:id", (c) => {
   const id = c.req.param("id");
@@ -774,6 +870,8 @@ app.delete("/memory/:key", (c) => {
 app.route("/knowledge/", knowledgeRoutes(knowledgeStore));
 app.route("/agents/", agentRoutes(agentStore));
 app.route("/speech/", speechRoutes());
+// The user's name, for greetings and the system prompt.
+app.route("/profile/", profileRoutes());
 
 // ---------------------------------------------------------------------------
 // Connector status

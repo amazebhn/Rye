@@ -5,6 +5,70 @@ export const TableToolbarSlot = createContext<HTMLElement | null>(null);
 import { createPortal } from "react-dom";
 import { Check, Copy, Download, Maximize2, X } from "lucide-react";
 
+/** A title that reads like a query (SQL, a log filter) rather than a name: shown as code. */
+const looksLikeQuery = (text: string) =>
+  text.includes("\n") || /^\s*(select|with|show|describe|explain|fields|filter|stats|search|index=|\{)/i.test(text) || text.length > 90;
+
+/**
+ * The full-screen viewer's title: one line with an ellipsis, so it never pushes into the controls.
+ * A long or multi-line one (usually the query behind the table) can be opened in full and copied.
+ */
+function FullscreenTitle({ title }: { title?: string }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const lineRef = useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = useState(false);
+  const text = title?.trim() ?? "";
+  const query = text ? looksLikeQuery(text) : false;
+
+  // Offer "Show query" only when the line doesn't fit or the text has more than one line.
+  useEffect(() => {
+    const el = lineRef.current;
+    if (!el) return;
+    const measure = () => setCut(el.scrollWidth > el.clientWidth + 1 || text.includes("\n"));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+
+  if (!text) return <div className="table-fullscreen-title" />;
+  const oneLine = text.replace(/\s+/g, " ");
+  return (
+    <div className={`table-fullscreen-title${query ? " is-query" : ""}${open ? " is-open" : ""}`}>
+      <div className="table-fullscreen-title-line">
+        <span ref={lineRef} className="table-fullscreen-title-text" title={open ? undefined : text}>
+          {oneLine}
+        </span>
+        {(cut || open) && (
+          <button type="button" className="table-fullscreen-title-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+            {open ? "Hide" : query ? "Show query" : "Show all"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="table-fullscreen-title-full">
+          <pre>{text}</pre>
+          <button
+            type="button"
+            className="table-frame-action"
+            onClick={() => {
+              void navigator.clipboard.writeText(text).then(() => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1400);
+              });
+            }}
+            aria-label={query ? "Copy query" : "Copy title"}
+            title={query ? "Copy query" : "Copy title"}
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface TableFrameProps {
   title?: string;
   children: React.ReactNode;
@@ -150,22 +214,23 @@ export default function TableFrame({
           tabIndex={-1}
         >
           <header className="table-fullscreen-header">
-            <div className="table-fullscreen-title">
-              {title && <span>{title}</span>}
+            {/* Row 1: what the table is (a name, or often the query that made it) and the viewer's actions. */}
+            <div className="table-fullscreen-top">
+              <FullscreenTitle title={title} />
+              {actions(true)}
+              <button
+                type="button"
+                ref={closeButtonRef}
+                className="table-frame-action table-fullscreen-close"
+                onClick={closeFullscreen}
+                aria-label="Close full-screen table"
+                title="Close (Esc)"
+              >
+                <X size={16} />
+              </button>
             </div>
-            {/* The table's own controls (search, group, chart) are drawn here, so there is one bar, not two. */}
+            {/* Row 2: the table's own controls (search, group, chart), drawn here by the table itself. */}
             <div ref={setToolbarSlot} className="table-fullscreen-tools" />
-            {actions(true)}
-            <button
-              type="button"
-              ref={closeButtonRef}
-              className="table-frame-action table-fullscreen-close"
-              onClick={closeFullscreen}
-              aria-label="Close full-screen table"
-              title="Close (Esc)"
-            >
-              <X size={16} />
-            </button>
           </header>
           <div className="table-fullscreen-content">
             {/* Rendered once the header slot exists, so the controls never flash in the wrong place. */}

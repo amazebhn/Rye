@@ -96,6 +96,8 @@ const SIZES = {
   md: { box: 28, font: 11.5 },
   lg: { box: 42, font: 15 },
   xl: { box: 54, font: 19 },
+  /** The empty-chat greeting, in place of the AI mark orb (same 78px). */
+  hero: { box: 96, font: 32 },
 } as const;
 
 interface Props {

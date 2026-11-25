@@ -156,6 +156,12 @@ const ContextSchema = z.object({
   knowledge_min_similarity: z.number().min(0).max(1).default(0.5),
 });
 
+const AttachmentsSchema = z.object({
+  // The Ollama vision model that describes attached images (for later turns and for search).
+  // Blank: the smallest installed model Ollama says has vision. "off": no descriptions.
+  vision_model: z.string().default(""),
+});
+
 const SpeechSchema = z.object({
   // Command that transcribes a dictation recording. {input} is the audio file and {output_dir} a
   // scratch folder; the transcript is a .txt written there, or else the command's output.
@@ -312,6 +318,7 @@ const SettingsSchema = z.object({
   claude: ClaudeSchema.default({}),
   context: ContextSchema.default({}),
   speech: SpeechSchema.default({}),
+  attachments: AttachmentsSchema.default({}),
   models: ModelsSchema.default({}),
   decision: DecisionSchema.default({}),
   rerank: RerankSchema.default({}),
@@ -448,6 +455,7 @@ function applyEnvOverrides(raw: Record<string, unknown>): Record<string, unknown
   maybe(str("RYE_RERANK_PROVIDER"), ["rerank", "provider"]);
   maybe(str("RYE_RERANK_MODEL"), ["rerank", "model"]);
   maybe(str("RYE_RERANK_URL"), ["rerank", "url"]);
+  maybe(str("RYE_VISION_MODEL"), ["attachments", "vision_model"]);
   maybe(num("RYE_OLLAMA_CONTEXT_WINDOW"), ["ollama", "context_window"]);
 
   // Copilot
@@ -668,8 +676,11 @@ export function mergeDatabases(
 }
 
 export function getEffectiveSettings(): Settings {
-  const base = loadSettings();
-  const envKey = getActiveEnv();
+  return settingsForEnv(loadSettings(), getActiveEnv());
+}
+
+/** `base` with one environment's overrides applied; `null`, "default" or an unknown key leave it as it is. */
+export function settingsForEnv(base: Settings, envKey: string | null): Settings {
   if (!envKey) return base;
 
   const override = base.environments[envKey];

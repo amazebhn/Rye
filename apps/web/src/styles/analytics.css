@@ -21,8 +21,8 @@
   background: transparent;
   color: var(--color-fg-muted);
   font: inherit;
-  font-size: 11px;
-  padding: 3px 10px;
+  font-size: 12px;
+  padding: 4px 12px;
   border-radius: var(--radius-xs);
   cursor: pointer;
 }
@@ -50,7 +50,7 @@
 }
 
 .analytics-stat-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -63,7 +63,7 @@
 }
 
 .analytics-stat-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-fg-faint);
 }
 
@@ -72,12 +72,14 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  background: rgba(217, 119, 87, 0.1);
-  border: 1px solid rgba(217, 119, 87, 0.3);
-  font-size: 12px;
-  color: var(--color-fg-light);
+  border-radius: var(--radius-md);
+  background: var(--main-warning-bg);
+  border: 1px solid color-mix(in srgb, var(--main-warning) 30%, var(--main-border));
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--main-fg);
 }
+.analytics-note > svg { flex-shrink: 0; color: var(--main-warning); }
 
 .analytics-section {
   display: flex;
@@ -99,7 +101,7 @@
 
 .analytics-section-sub {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-fg-faint);
 }
 
@@ -271,4 +273,17 @@
   font-size: 13px;
   font-weight: 500;
   width: 100%;
+}
+
+/* Phone width (MOBILE_BREAKPOINT in utils/viewport.ts): one chart per row, and the tools table
+   scrolls sideways inside its own frame instead of crushing its columns. */
+@media (max-width: 767px) {
+  .analytics-grid { grid-template-columns: minmax(0, 1fr); }
+  .analytics-section { min-width: 0; }
+  .analytics-section > .sop-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .analytics-range-btn { padding: 6px 12px; }
 }

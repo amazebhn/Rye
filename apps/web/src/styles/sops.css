@@ -204,6 +204,81 @@
   width: 32px;
 }
 
+/* Agents list: the description is what tells agents apart, so it gets the room.
+   Fixed layout holds the column widths whatever the text; the name truncates and
+   the description wraps to two lines. */
+.sop-table--agents { table-layout: fixed; }
+.sop-table--agents .sop-table-th--name { width: 28%; }
+.sop-table--agents .sop-table-th--date { width: 120px; }
+.sop-table--agents .sop-table-th--action { width: 44px; }
+
+/* A flex <td> stops being a table cell (its border stops short of the row). */
+.sop-table--agents .sop-table-td--name { display: table-cell; }
+
+.agent-table-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-table-name > :first-child { flex-shrink: 0; }
+
+/* Name and handle share one clipped line: when the handle doesn't fit whole it
+   wraps onto the hidden second line instead of showing as a stub like "@r…". */
+.agent-table-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  line-height: 20px;
+  height: 20px;
+  overflow: hidden;
+}
+
+.agent-table-name-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-table-slug {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--main-fg-faint);
+}
+
+.agent-table-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--main-fg-muted);
+  line-height: 1.45;
+}
+
+.agent-table-date {
+  white-space: nowrap;
+  color: var(--main-fg-faint);
+}
+
+/* Narrow panes: the date is the least useful column, so it goes first, and the
+   name gets a larger share so it still shows more than its first letters. */
+@media (max-width: 760px) {
+  .sop-table--agents .sop-table-th--name { width: 38%; }
+  .sop-table--agents .sop-table-th--date,
+  .sop-table--agents .agent-table-date { display: none; }
+}
+
 /* ── SOP detail view ────────────────────────────────────────────────────── */
 
 .sop-detail-title {
@@ -1029,3 +1104,98 @@
 .skill-install-desc { display: block; margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--main-fg-muted); }
 .skill-install-details summary { cursor: pointer; font-size: 12px; color: var(--main-fg-muted); }
 .skill-install-details[open] summary { margin-bottom: 6px; }
+
+/* Below 1024px the sidebar column can leave a panel too narrow for its header: the toolbar wraps
+   under the title instead of running past the edge (as Settings' list does, settings.css). */
+@media (max-width: 1023px) {
+  .sop-panel-header:not(.sop-panel-header--detail) { flex-wrap: wrap; row-gap: 8px; }
+  /* Memory: its title and two tabs wrap as separate pieces. */
+  .memory-header-main { display: contents !important; }
+}
+
+/* ── Phone width (MOBILE_BREAKPOINT in utils/viewport.ts) ────────────────────
+   The panels (SOPs, Skills, Memory, Agents, Analytics, Settings) share these headers and bodies:
+   the toolbar drops to a row of its own, titles truncate, "Edit with AI" keeps only its mark, the
+   AI Editor is a full-screen sheet and tables lose their least useful columns. */
+@media (max-width: 767px) {
+  .sop-panel-header {
+    flex-wrap: wrap;
+    padding: 8px 12px 8px 16px;
+    row-gap: 8px;
+    min-height: 52px;
+    box-sizing: border-box;
+  }
+  .sop-panel-header > .sop-panel-title { min-width: 0; font-size: 17px; }
+  .sop-panel-header > .sop-panel-toolbar {
+    flex: 1 1 100%;
+    min-width: 0;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .sop-panel-header > .sop-panel-toolbar .sop-search-wrap { flex: 1 1 140px; min-width: 0; }
+  .sop-panel-header > .sop-panel-toolbar .sop-search-input { width: 100%; padding-top: 6px; padding-bottom: 6px; }
+  /* A toolbar with nothing to show (Settings while idle) takes no row. */
+  .sop-panel-header > .sop-panel-toolbar:empty { display: none; }
+
+  .sop-panel-header--detail {
+    flex-wrap: nowrap;
+    padding: 8px 10px 8px 16px;
+    gap: 4px;
+  }
+  .sop-panel-header--detail > .sop-detail-title { flex: 1 1 auto; font-size: 16px; }
+  .sop-panel-header--detail .sop-header-icon-btn { width: 36px; height: 36px; }
+  .sop-panel-header--detail > div:has(> .sop-detail-title) { flex: 1 1 auto !important; min-width: 0; }
+  .agent-header-slug { display: none; }
+  /* Text buttons in a detail header ("Open Chat") keep only their icon; the label stays as the name. */
+  .sop-panel-header--detail > .btn {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    gap: 0 !important;
+    justify-content: center;
+    font-size: 0;
+  }
+  /* "Edit with AI" / "Hide AI Editor": the mark alone (the label stays as its accessible name). */
+  .sop-ai-btn {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+    font-size: 0;
+  }
+  .sop-draft-badge { display: none; }
+  .skill-header-spacer { display: none; }
+
+  .sop-panel-body { padding: 16px; }
+  .sop-card-grid { grid-template-columns: 1fr; }
+  .sop-table-th,
+  .sop-table-td { padding-left: 8px; padding-right: 8px; }
+  .sop-table-col--secondary { display: none; }
+  .sop-menu-btn { padding: 6px; }
+
+  .sop-detail-body { padding: 20px 16px calc(40px + env(safe-area-inset-bottom)); }
+  .sop-detail-md table { display: block; overflow-x: auto; }
+  .sop-detail-diff-toolbar { flex-wrap: wrap; }
+
+  /* The AI Editor (AiEditorSheet, for SOPs, Skills and Agents) covers the page. */
+  .sop-chat-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 140;
+    width: auto;
+    border-left: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .sop-chat-sheet-header { padding: 8px 10px 8px 16px; }
+  .sop-chat-sheet-header .modal-close { width: 36px; height: 36px; }
+  .modal-composer-hint { display: none; }
+  .modal-composer-actions > :last-child { margin-left: auto; }
+}
+
+/* No hover on a touch screen: the cards' and rows' ⋯ menus stay visible. */
+@media (hover: none) {
+  .sop-menu-btn { opacity: 1; }
+}

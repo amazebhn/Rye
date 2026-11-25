@@ -41,9 +41,11 @@ const SOP_AI_SYSTEM_SUFFIX = [
 interface Props {
   onCreated: (sop: SOP) => void;
   onClose: () => void;
+  /** Adds "Import a file" to the picker: opens the file chooser for a .md or .json SOP. */
+  onImport?: () => void;
 }
 
-export default function NewSopModal({ onCreated, onClose }: Props) {
+export default function NewSopModal({ onCreated, onClose, onImport }: Props) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -76,6 +78,8 @@ export default function NewSopModal({ onCreated, onClose }: Props) {
       aiDescription="Describe the process. The agent may ask follow-ups, then drafts the SOP."
       pickerWriteDescription="Start from a blank page and write the procedure yourself"
       pickerAiDescription="Describe the process and the agent drafts it for you"
+      pickerImportDescription="Upload an SOP saved as Markdown (.md) or JSON (.json)"
+      onImport={onImport}
       submitLabel="Create SOP"
       canSubmit={title.trim().length > 0}
       submitting={saving}

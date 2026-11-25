@@ -11,6 +11,8 @@ import { useMemories } from "./contexts/MemoryContext";
 import { useAgents } from "./contexts/AgentContext";
 import { useEnv } from "./contexts/EnvContext";
 import Sidebar from "./components/shell/Sidebar";
+import { SidebarControlContext, type SidebarControl } from "./components/shell/SidebarButton";
+import { useIsMobile } from "./utils/viewport";
 import ChatSearchModal from "./components/shell/ChatSearch";
 import ChatHeader from "./components/chat/ChatHeader";
 import MessageList from "./components/chat/MessageList";
@@ -25,15 +27,15 @@ import ResultTable from "./components/results/ResultTable";
 import ArtifactSheet from "./components/artifacts/ArtifactSheet";
 import FolderSuggestionToast from "./components/shell/FolderSuggestionToast";
 import { useChatFolders } from "./components/shell/useChatFolders";
+import { MAX_ATTACHMENTS, readyRefs, refForServer, refKey, uploadAttachment, type AttachmentRef, type ContextRef, type PendingAttachment } from "./utils/attachments";
+import { PANEL_PATHS, parseAppPath, redirectMovedPath, settingsPath, sopPath, type AppRoute } from "./utils/routes";
+import type { ToolFocus } from "./components/settings/ToolsSection";
 
 const HANDOFF_PROMPT =
   "Write a handoff doc for this conversation as a Markdown file named handoff, so another engineer (or their AI agent) can pick it up cold. " +
   "Make it self-contained: no references to \"above\" or \"earlier\". Include the problem and its impact, the environment and systems involved, " +
   "what was investigated in order, key findings with the exact evidence (queries, log lines, IDs, timestamps, error messages), what was ruled out, " +
   "the current hypothesis and how confident you are, open questions, and next steps with the exact commands or queries to run.";
-
-// Lazy so recharts only loads when Analytics is opened.
-const AnalyticsPanel = React.lazy(() => import("./components/analytics/AnalyticsPanel"));
 
 // ---------------------------------------------------------------------------
 // Chat history persistence (server-backed)
@@ -53,6 +55,24 @@ function readActiveChatId(): string | undefined {
 const DRAFTS_STORAGE_KEY = "rye.drafts";
 // Draft key for a new chat that has no id yet.
 const NEW_CHAT_DRAFT = "new";
+
+// The model last picked or sent with, so a new chat starts on it rather than on whatever the open chat uses.
+const LAST_MODEL_KEY = "rye-last-model";
+function readLastModel(): string | undefined {
+  try {
+    return window.localStorage.getItem(LAST_MODEL_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+function rememberLastModel(model: string | undefined): void {
+  if (!model) return;
+  try {
+    window.localStorage.setItem(LAST_MODEL_KEY, model);
+  } catch {
+    // Private mode: new chats fall back to the default model.
+  }
+}
 const MAX_PERSISTED_DRAFT = 20_000;
 
 function readDrafts(): Record<string, string> {
@@ -77,14 +97,51 @@ function chatIdFromPath(pathname: string): string | undefined {
   }
 }
 
+/**
+ * "/" is Home: the greeting, a large composer and starter prompts. NEW_CHAT_PATH is a new chat that
+ * looks like any other chat (composer docked at the bottom), with the greeting as a placeholder
+ * that floats away when the first message goes in. Neither has a chat id until the first send.
+ */
+const NEW_CHAT_PATH = "/new";
+
+/** Home or a blank new chat: addresses that show no chat, even if one was open last time. */
+function isEmptyChatPath(pathname: string): boolean {
+  return pathname === "/" || pathname === NEW_CHAT_PATH;
+}
+
 function chatPath(chatId: string | undefined): string {
-  return chatId ? `/c/${encodeURIComponent(chatId)}` : "/";
+  if (chatId) return `/c/${encodeURIComponent(chatId)}`;
+  // No chat yet: stay on whichever of the two empty pages is showing.
+  return window.location.pathname === NEW_CHAT_PATH ? NEW_CHAT_PATH : "/";
 }
 
 function navigate(path: string, mode: "push" | "replace" = "push") {
   if (window.location.pathname === path) return;
   if (mode === "replace") window.history.replaceState(null, "", path);
   else window.history.pushState(null, "", path);
+}
+
+/**
+ * The page an address shows when it isn't a chat (Settings, SOPs…; see utils/routes.ts), or
+ * undefined for "/" and /c/<id>. These addresses never say anything about which chat is open:
+ * the chat list and the open chat are left as they are while one of them is on show.
+ */
+function panelForRoute(route: AppRoute): Panel | undefined {
+  if (route.kind === "settings") return "settings";
+  if (route.kind === "sop") return "sops";
+  if (route.kind === "panel") return route.panel;
+  return undefined;
+}
+
+// A moved address (/analytics is now /settings/usage) is rewritten first, on load and on Back/Forward.
+const routeNow = () => {
+  redirectMovedPath();
+  return parseAppPath(window.location.pathname);
+};
+
+/** A chat that is gone stops being the address; a page other than that chat keeps its own. */
+function leaveChatAddress(chatId: string | undefined) {
+  if (chatId && chatIdFromPath(window.location.pathname) === chatId) navigate("/", "replace");
 }
 
 // Mirrors the server: filed chats and dedicated agent chats don't count toward the cap.
@@ -113,6 +170,8 @@ interface QueuedMessage {
   text: string;
   chatId: string;
   model: string | undefined;
+  attachments?: AttachmentRef[];
+  references?: ContextRef[];
 }
 
 // Live state of one chat's run. Kept with `running: false` when the run ends on a prompt.
@@ -129,7 +188,7 @@ interface ChatRun {
 }
 
 // Skills are managed in Settings (its "skills" page), not in a panel of their own.
-type Panel = "home" | "chat" | "sops" | "memory" | "agents" | "analytics" | "settings";
+type Panel = "home" | "chat" | "sops" | "memory" | "agents" | "settings";
 
 function markLastPaused(msgs: RenderMessage[]): RenderMessage[] {
   return msgs.map((m, i, arr) => (i === arr.length - 1 ? { ...m, paused: true } : m));
@@ -159,9 +218,12 @@ export default function App() {
   const persistedRef = useRef<Map<string, ChatRecord>>(new Map());
   // Last /chat/history snapshot; records adopted from it are already on the server.
   const remoteRef = useRef<Map<string, ChatRecord>>(new Map());
-  // The URL wins; the stored id is only a fallback when the URL names no chat.
+  // The URL wins; the stored id is only a fallback when the URL names no chat and isn't Home or /new
+  // (e.g. a reload on /settings keeps the last chat ready for when the user goes back to it).
   const [activeChatId, setActiveChatId] = useState<string | undefined>(
-    () => chatIdFromPath(window.location.pathname) ?? readActiveChatId(),
+    () =>
+      chatIdFromPath(window.location.pathname) ??
+      (isEmptyChatPath(window.location.pathname) ? undefined : readActiveChatId()),
   );
   // Set when a chat is opened from a search result, so the list scrolls to that message.
   const [focusMessage, setFocusMessage] = useState<{ chatId: string; index: number; token: number } | null>(null);
@@ -188,8 +250,22 @@ export default function App() {
   const remoteRunningIdsRef = useRef(remoteRunningIds);
   useEffect(() => { remoteRunningIdsRef.current = remoteRunningIds; }, [remoteRunningIds]);
   const [settingsKey, setSettingsKey] = useState(0);
-  // Held here so anything that wants a Settings page can land on it: setSettingsTab("skills" | "mcp" | …) then setActivePanel("settings").
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  // Held here so anything that wants a Settings page can land on it: openPage(settingsPath("skills" | "mcp" | …)),
+  // or openAppPath from outside App. The address (/settings/<page>) decides it; see showRoute below.
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => {
+    const route = routeNow();
+    return route.kind === "settings" ? route.page : "general";
+  });
+  // /settings/tools/<name>: the tool the Tools page scrolls to and highlights.
+  const [focusTool, setFocusTool] = useState<ToolFocus | null>(() => {
+    const route = routeNow();
+    return route.kind === "settings" && route.page === "tools" && route.item ? { name: route.item, token: 0 } : null;
+  });
+  // /sops/<id>: the SOP open in the SOPs panel.
+  const [sopId, setSopId] = useState<number | null>(() => {
+    const route = routeNow();
+    return route.kind === "sop" ? route.id : null;
+  });
   // Unsent composer text per chat id (or NEW_CHAT_DRAFT).
   const [drafts, setDrafts] = useState<Record<string, string>>(readDrafts);
   const draftKey = activeChatId ?? NEW_CHAT_DRAFT;
@@ -204,6 +280,67 @@ export default function App() {
     });
   }, []);
   const setInput = (text: string) => setDraft(draftKey, text);
+  // Files picked in the composer, per chat like the text. Uploaded as soon as they are picked; kept in memory only.
+  const [fileDrafts, setFileDrafts] = useState<Record<string, PendingAttachment[]>>({});
+  const fileDraftsRef = useRef(fileDrafts);
+  fileDraftsRef.current = fileDrafts;
+  const draftFiles = fileDrafts[draftKey] ?? [];
+  const updateFiles = useCallback((key: string, fn: (items: PendingAttachment[]) => PendingAttachment[]) => {
+    setFileDrafts((prev) => {
+      const next = fn(prev[key] ?? []);
+      const copy = { ...prev };
+      if (next.length > 0) copy[key] = next;
+      else delete copy[key];
+      return copy;
+    });
+  }, []);
+  const addFiles = useCallback((key: string, files: File[]) => {
+    const room = MAX_ATTACHMENTS - (fileDraftsRef.current[key]?.length ?? 0);
+    const picked = files.slice(0, Math.max(0, room)).map((file) => ({
+      file,
+      pending: {
+        key: crypto.randomUUID(),
+        name: file.name,
+        size: file.size,
+        status: "uploading" as const,
+        ...(file.type.startsWith("image/") ? { previewUrl: URL.createObjectURL(file) } : {}),
+      },
+    }));
+    if (picked.length === 0) return;
+    updateFiles(key, (items) => [...items, ...picked.map((p) => p.pending)]);
+    for (const { file, pending } of picked) {
+      uploadAttachment(file)
+        .then((ref) => updateFiles(key, (items) => items.map((a) => (a.key === pending.key ? { ...a, status: "ready", ref } : a))))
+        .catch((err: unknown) =>
+          updateFiles(key, (items) => items.map((a) => (a.key === pending.key ? { ...a, status: "error", error: err instanceof Error ? err.message : String(err) } : a))),
+        );
+    }
+  }, [updateFiles]);
+  // SOPs and tools picked for the next message, per chat like the text.
+  const [refDrafts, setRefDrafts] = useState<Record<string, ContextRef[]>>({});
+  const refDraftsRef = useRef(refDrafts);
+  refDraftsRef.current = refDrafts;
+  const draftRefs = refDrafts[draftKey] ?? [];
+  const updateRefs = useCallback((key: string, fn: (items: ContextRef[]) => ContextRef[]) => {
+    setRefDrafts((prev) => {
+      const next = fn(prev[key] ?? []);
+      const copy = { ...prev };
+      if (next.length > 0) copy[key] = next;
+      else delete copy[key];
+      return copy;
+    });
+  }, []);
+  const addRef = useCallback((key: string, ref: ContextRef) => {
+    updateRefs(key, (items) => (items.some((r) => refKey(r) === refKey(ref)) || items.length >= 10 ? items : [...items, ref]));
+  }, [updateRefs]);
+  const removeRef = useCallback((key: string, k: string) => updateRefs(key, (items) => items.filter((r) => refKey(r) !== k)), [updateRefs]);
+  const removeFile = useCallback((key: string, fileKey: string) => {
+    updateFiles(key, (items) => {
+      const gone = items.find((a) => a.key === fileKey);
+      if (gone?.previewUrl) URL.revokeObjectURL(gone.previewUrl);
+      return items.filter((a) => a.key !== fileKey);
+    });
+  }, [updateFiles]);
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
   const messageQueueRef = useRef<QueuedMessage[]>([]);
   const updateQueue = useCallback((fn: (q: QueuedMessage[]) => QueuedMessage[]) => {
@@ -217,12 +354,105 @@ export default function App() {
   const selectedModelRef = useRef<string | undefined>(undefined);
   useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Phone width: the sidebar is a drawer over the content with its own open state, so the desktop
+  // column's expanded/collapsed state survives resizing between the two. Presentation only.
+  const isMobile = useIsMobile();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerOpenRef = useRef(false);
+  const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const closeDrawer = useCallback(() => {
+    if (!drawerOpenRef.current) return;
+    drawerOpenRef.current = false;
+    setDrawerOpen(false);
+    const back = drawerReturnFocusRef.current;
+    drawerReturnFocusRef.current = null;
+    // After the page has re-rendered: the page that opened the drawer may be gone (a chat or page was chosen),
+    // so focus goes to the new page's menu button instead.
+    window.requestAnimationFrame(() => {
+      if (drawerOpenRef.current) return;
+      const target = back?.isConnected ? back : document.querySelector<HTMLElement>(".main .sidebar-toggle-btn");
+      target?.focus({ preventScroll: true });
+    });
+  }, []);
+  useEffect(() => {
+    if (isMobile) return;
+    drawerOpenRef.current = false;
+    setDrawerOpen(false);
+  }, [isMobile]);
+  useEffect(() => {
+    const drawerShowing = isMobile && drawerOpen;
+    // The page behind the open drawer can't be reached by Tab or a screen reader.
+    mainRef.current?.toggleAttribute("inert", drawerShowing);
+    if (!drawerShowing) return;
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("#app-sidebar .sidebar-close-btn")?.focus();
+    });
+    // Capture phase, so this sees the page before a menu or dialog inside the drawer closes on the same Escape.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector(".modal-overlay, [role=menu], .sidebar-dropdown")) return;
+      if ((e.target as Element | null)?.closest?.("input, textarea, [contenteditable=true]")) return;
+      e.preventDefault();
+      closeDrawer();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isMobile, drawerOpen, closeDrawer]);
+  const sidebarControl = useMemo<SidebarControl>(() => ({
+    drawer: isMobile,
+    open: isMobile ? drawerOpen : sidebarOpen,
+    show: (trigger) => {
+      if (isMobile) {
+        drawerReturnFocusRef.current = trigger;
+        drawerOpenRef.current = true;
+        setDrawerOpen(true);
+      } else {
+        setSidebarOpen(true);
+      }
+    },
+  }), [isMobile, drawerOpen, sidebarOpen]);
+  // Choosing a chat or a page from the drawer closes it.
+  const fromDrawer = useCallback(<A extends unknown[]>(action: (...args: A) => void) => (...args: A) => {
+    action(...args);
+    closeDrawer();
+  }, [closeDrawer]);
   const [viewingResult, setViewingResult] = useState<{ id: string; sessionId: string } | null>(null);
   const [viewingArtifact, setViewingArtifact] = useState<{ id: string; sessionId: string; version: number } | null>(null);
   const closeArtifact = useCallback(() => setViewingArtifact(null), []);
-  const [activePanel, setActivePanel] = useState<Panel>("chat");
+  const [activePanel, setActivePanel] = useState<Panel>(() => panelForRoute(routeNow()) ?? "chat");
+  // Which empty page shows before a chat has messages: Home ("/", false) or a blank new chat (NEW_CHAT_PATH, true).
+  const [blankChat, setBlankChat] = useState(() => window.location.pathname === NEW_CHAT_PATH);
+  // The chat whose first message just went in from a blank new chat: its greeting floats away (CSS), then goes.
+  const [heroExitId, setHeroExitId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!heroExitId) return;
+    const t = window.setTimeout(() => setHeroExitId(null), 600);
+    return () => window.clearTimeout(t);
+  }, [heroExitId]);
   const activePanelRef = useRef(activePanel);
   useEffect(() => { activePanelRef.current = activePanel; }, [activePanel]);
+  // Shows the page an address names. False for "/" and chat addresses, which the chat code handles.
+  // Only page state changes here: never the chat list or the open chat.
+  const showRoute = useCallback((route: AppRoute): boolean => {
+    const panel = panelForRoute(route);
+    if (!panel) return false;
+    setActivePanel(panel);
+    if (route.kind === "settings") {
+      setSettingsTab(route.page);
+      setFocusTool(route.page === "tools" && route.item ? { name: route.item, token: Date.now() } : null);
+    } else if (route.kind === "sop") {
+      setSopId(route.id);
+    } else if (route.kind === "panel" && route.panel === "sops") {
+      setSopId(null);
+    }
+    return true;
+  }, []);
+  // Go to a page with its own address (Settings, SOPs…), adding a history entry.
+  const openPage = useCallback((path: string) => {
+    navigate(path);
+    showRoute(parseAppPath(path));
+  }, [showRoute]);
   const deletedChatIdsRef = useRef(new Set<string>());
   const chatsRef = useRef<ChatRecord[]>([]);
   useEffect(() => { chatsRef.current = chats; }, [chats]);
@@ -316,9 +546,10 @@ export default function App() {
     }
   }, [drafts]);
 
-  // Back/forward switches chats; "/" is a new chat.
+  // Back/forward switches chats; "/" is a new chat. Other pages' addresses show that page and leave the chat alone.
   useEffect(() => {
     const onPopState = () => {
+      if (showRoute(routeNow())) return;
       const id = chatIdFromPath(window.location.pathname);
       const chat = id ? chatsRef.current.find((c) => c.id === id) : undefined;
       const run = id ? runsRef.current.get(id) : undefined;
@@ -330,11 +561,13 @@ export default function App() {
         return;
       }
       if (id) navigate("/", "replace");
+      setBlankChat(window.location.pathname === NEW_CHAT_PATH);
       setActiveChatId(undefined);
+      setSelectedModel(readLastModel());
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [showRoute]);
 
   useEffect(() => {
     if (!chatsHydrated || !activeChat || selectedModelRef.current !== undefined) return;
@@ -362,9 +595,12 @@ export default function App() {
         const current = activeChatIdRef.current;
         let next: string | undefined;
         if (urlChatId !== undefined) next = known(urlChatId) ? urlChatId : undefined;
+        // Home and /new show no chat unless one was started here before the list arrived.
+        else if (isEmptyChatPath(window.location.pathname)) next = current && known(current) ? current : undefined;
         else next = current && known(current) ? current : normalized.find((chat) => chat.pendingPrompt)?.id;
         setActiveChatId(next);
-        navigate(chatPath(next), "replace");
+        // On another page's address (/settings…), the address stays; the chat is there for when the user goes back to it.
+        if (!panelForRoute(routeNow())) navigate(chatPath(next), "replace");
         setDrafts((prev) => {
           const kept = Object.entries(prev).filter(([key]) => key === NEW_CHAT_DRAFT || known(key));
           return kept.length === Object.keys(prev).length ? prev : Object.fromEntries(kept);
@@ -518,7 +754,7 @@ export default function App() {
     });
     if (active && goneIds.has(active)) {
       setActiveChatId(undefined);
-      navigate("/", "replace");
+      leaveChatAddress(active);
     }
     const goneSessions = new Set([...goneIds].map((id) => before.get(id)?.sessionId).filter(Boolean));
     setViewingResult((v) => (v && goneSessions.has(v.sessionId) ? null : v));
@@ -694,13 +930,15 @@ export default function App() {
   useEffect(() => {
     registerNavHandlers({
       openChat: openAgentChat,
-      openProfile: () => setActivePanel("agents"),
+      openProfile: () => openPage(PANEL_PATHS.agents),
     });
   });
 
   // Persist a model change immediately so it survives even without sending.
   function changeModel(model: string) {
     setSelectedModel(model);
+    // An agent's chat uses that agent's model; picking one there isn't a general preference.
+    if (!activeChat?.agentId) rememberLastModel(model);
     if (activeChatId) {
       setChats((prev) => prev.map((c) => (c.id === activeChatId ? { ...c, model } : c)));
     }
@@ -712,8 +950,9 @@ export default function App() {
     );
   }
 
-  function deleteChat(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
+  // Called once the user has confirmed (the sidebar asks first).
+  function deleteChat(id: string, e?: React.MouseEvent) {
+    e?.stopPropagation();
     deletedChatIdsRef.current.add(id);
     const deletedSessionId = chats.find((chat) => chat.id === id)?.sessionId;
     const query = deletedSessionId ? `?session_id=${encodeURIComponent(deletedSessionId)}` : "";
@@ -725,7 +964,9 @@ export default function App() {
     setDraft(id, "");
     if (activeChatId === id) {
       setActiveChatId(undefined);
-      navigate("/", "replace");
+      // leaveChatAddress goes to "/", so show Home rather than a blank new chat.
+      if (chatIdFromPath(window.location.pathname) === id) setBlankChat(false);
+      leaveChatAddress(id);
     }
     if (viewingResult?.sessionId === deletedSessionId) setViewingResult(null);
     if (viewingArtifact?.sessionId === deletedSessionId) setViewingArtifact(null);
@@ -739,10 +980,13 @@ export default function App() {
 
   function startNewChat(opts?: { display?: string; context?: string }) {
     setPendingContext(opts?.context);
+    // A new chat starts on the model last used, not on the one the chat being left was using.
+    setSelectedModel(readLastModel());
     if (!opts?.display) {
-      // No id until the first send, so the new-chat draft and "/" stay shared.
+      // No id until the first send, so the new-chat draft is shared with Home.
       setActiveChatId(undefined);
-      navigate("/");
+      setBlankChat(true);
+      navigate(NEW_CHAT_PATH);
       return;
     }
     const newChatId = crypto.randomUUID();
@@ -763,6 +1007,16 @@ export default function App() {
     navigate(chatPath(newChatId));
   }
 
+  /** Home: the greeting with the large composer and starter prompts. Leaves the chat list alone. */
+  function goHome() {
+    setPendingContext(undefined);
+    setSelectedModel(readLastModel());
+    setActiveChatId(undefined);
+    setBlankChat(false);
+    setActivePanel("chat");
+    navigate("/");
+  }
+
   async function sendMessage(
     overrideText?: string,
     // Queued sends and retries carry their chat's state explicitly so this closure's render state is never read.
@@ -770,9 +1024,24 @@ export default function App() {
     // Index of the user message this send replaces; the server truncates from there first.
     rewindIndex?: number,
     kind?: RenderMessage["kind"],
+    // Files sent with the message. A composer send takes the composer's; queued sends and edits pass theirs.
+    files?: AttachmentRef[],
+    // SOPs and tools the message is pointed at; same rule as files.
+    refs?: ContextRef[],
   ) {
     const text = (overrideText ?? input).trim();
-    if (!text) return;
+    const fromComposer = overrideText === undefined && !continuation;
+    const composerFiles = fromComposer ? (fileDraftsRef.current[draftKey] ?? []) : [];
+    // Wait for uploads to finish (the send button is disabled meanwhile; this covers Enter).
+    if (composerFiles.some((a) => a.status === "uploading")) return;
+    const sending = files ?? readyRefs(composerFiles);
+    const pointing = refs ?? (fromComposer ? (refDraftsRef.current[draftKey] ?? []) : []);
+    if (!text && sending.length === 0 && pointing.length === 0) return;
+    if (fromComposer && composerFiles.length > 0) {
+      for (const a of composerFiles) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      updateFiles(draftKey, () => []);
+    }
+    if (fromComposer && pointing.length > 0) updateRefs(draftKey, () => []);
     const chatId = continuation?.chatId ?? activeChatId ?? crypto.randomUUID();
     if (deletedChatIdsRef.current.has(chatId)) return;
     // A chat whose messages haven't loaded can't be sent into: the run would start from an empty
@@ -782,11 +1051,12 @@ export default function App() {
     if (!continuation && remoteRunningIdsRef.current.has(chatId) && !runsRef.current.get(chatId)?.running) return;
     // One run per chat (the backend doesn't guard same-session races): queue behind it.
     if (runsRef.current.get(chatId)?.running) {
+      const queuedFiles = { ...(sending.length > 0 ? { attachments: sending } : {}), ...(pointing.length > 0 ? { references: pointing } : {}) };
       if (continuation) {
-        updateQueue((q) => [{ text, chatId, model: continuation.model }, ...q]);
+        updateQueue((q) => [{ text, chatId, model: continuation.model, ...queuedFiles }, ...q]);
       } else {
         if (overrideText === undefined) setDraft(draftKey, "");
-        updateQueue((q) => [...q, { text, chatId, model: selectedModelRef.current }]);
+        updateQueue((q) => [...q, { text, chatId, model: selectedModelRef.current, ...queuedFiles }]);
       }
       return;
     }
@@ -804,6 +1074,8 @@ export default function App() {
       : selectedModelRef.current;
     const env = resolveEnv(chatId);
     const chatAgentId = chatsRef.current.find((c) => c.id === chatId)?.agentId;
+    // What the user last sent with is what a new chat starts on (agent chats use their agent's model).
+    if (!continuation && !chatAgentId) rememberLastModel(model);
     const turnId = crypto.randomUUID();
     // Typing "continue" at a paused reply is the same action as the Continue button.
     const turnKind = kind ?? (/^continue[.!]?$/i.test(text) && baseMessages.at(-1)?.paused ? "continue" : undefined);
@@ -811,7 +1083,7 @@ export default function App() {
     const initial: RenderMessage[] = [
       // Sending anything resolves the pause, so retire the Continue button.
       ...baseMessages.map((m) => (m.paused ? { ...m, paused: false } : m)),
-      { role: "user", content: text, id: turnId, ...(turnKind ? { kind: turnKind } : {}) },
+      { role: "user", content: text, id: turnId, ...(turnKind ? { kind: turnKind } : {}), ...(sending.length > 0 ? { attachments: sending } : {}), ...(pointing.length > 0 ? { references: pointing } : {}) },
       { role: "assistant", content: "", toolCalls: [], ...(chatAgentId ? { agentId: chatAgentId } : {}), meta: { startedAt: Date.now(), model, env } },
     ];
     // localMessages is always synchronously up to date, unlike React state, which batches
@@ -856,6 +1128,8 @@ export default function App() {
     };
     // Don't yank the user back if they navigated away while the queue drained.
     if (!continuation) {
+      // The first message of a blank new chat: its greeting floats away instead of vanishing.
+      if (blankChat && displayMessages.length === 0) setHeroExitId(chatId);
       setActiveChatId(chatId);
       // A new chat's first send turns "/" into its URL without adding a history entry.
       navigate(chatPath(chatId), "replace");
@@ -880,6 +1154,8 @@ export default function App() {
           ...(env ? { env } : {}),
           ...(chatAgentId ? { agent_id: chatAgentId } : {}),
           ...(rewindIndex !== undefined ? { rewind: { chat_id: chatId, index: rewindIndex } } : {}),
+          ...(sending.length > 0 ? { attachments: sending.map((a) => a.id) } : {}),
+          ...(pointing.length > 0 ? { references: pointing.map(refForServer) } : {}),
         }),
         signal: controller.signal,
       });
@@ -1065,7 +1341,12 @@ export default function App() {
               const userMsgs = msgs.filter((m) => m.role === "user" && !m.kind);
               const asstMsgs = msgs.filter((m) => m.role === "assistant");
               if (!turnKind && !chatAgentId && userMsgs.length === 1) {
-                generateTitle(chatId, userMsgs[0].content, asstMsgs[asstMsgs.length - 1]?.content ?? "");
+                // A message of only files is titled from their names.
+                const first = userMsgs[0];
+                const said =
+                  first.content.trim() ||
+                  [...(first.attachments ?? []).map((a) => a.name), ...(first.references ?? []).map((r) => (r.type === "sop" ? r.title : r.name))].join(", ");
+                generateTitle(chatId, said, asstMsgs[asstMsgs.length - 1]?.content ?? "");
               }
             }
           } catch {
@@ -1103,7 +1384,7 @@ export default function App() {
       if (next) {
         updateQueue((q) => q.filter((m) => m !== next));
         const baseMessages = streamPaused ? markLastPaused(localMessages) : localMessages;
-        void sendMessage(next.text, { chatId, sessionId: currentSessionId, baseMessages, model: next.model });
+        void sendMessage(next.text, { chatId, sessionId: currentSessionId, baseMessages, model: next.model }, undefined, undefined, next.attachments, next.references);
       }
     }
   }
@@ -1111,9 +1392,12 @@ export default function App() {
   // Retry and edit: drop the user message at `index` and everything after it, then send `text` in its place.
   function resubmitFrom(index: number, text: string) {
     const trimmed = text.trim();
+    // The edited (or retried) message keeps the files it was sent with.
+    const files = displayMessages[index]?.attachments ?? [];
+    const refs = displayMessages[index]?.references ?? [];
     // runsRef is set synchronously by sendMessage, so it also blocks a same-frame double click.
     if (
-      !trimmed || !activeChatId || runsRef.current.get(activeChatId)?.running ||
+      (!trimmed && files.length === 0 && refs.length === 0) || !activeChatId || runsRef.current.get(activeChatId)?.running ||
       messageQueueRef.current.some((m) => m.chatId === activeChatId)
     ) return;
     if (displayMessages[index]?.role !== "user" || displayMessages[index].kind) return;
@@ -1126,11 +1410,20 @@ export default function App() {
         model: selectedModelRef.current,
       },
       index,
+      undefined,
+      files,
+      refs,
     );
   }
 
   function answerPrompt(answer: string) {
     const kind = visiblePrompt && isPermissionPrompt(visiblePrompt) ? "approval" : "answer";
+    dismissPrompt();
+    void sendMessage(answer, undefined, undefined, kind);
+  }
+
+  // The agent's question is answered (by a pick or by the next message): hide it.
+  function dismissPrompt() {
     if (activeChatId) {
       const chatId = activeChatId;
       const run = runsRef.current.get(chatId);
@@ -1142,7 +1435,6 @@ export default function App() {
         chat.id === chatId ? { ...chat, pendingPrompt: undefined } : chat
       ));
     }
-    void sendMessage(answer, undefined, undefined, kind);
   }
 
   // While the agent waits on a question, the composer answers it; a permission prompt reads a typed reply as a denial.
@@ -1150,13 +1442,21 @@ export default function App() {
   function sendFromComposer() {
     const text = input.trim();
     if (composerPrompt !== "question" || !text) return void sendMessage();
+    // With files or SOPs/tools picked, the reply is a full message (it still answers the question):
+    // an inline answer can't carry them.
+    if (draftFiles.length > 0 || draftRefs.length > 0) {
+      if (draftFiles.some((a) => a.status === "uploading")) return;
+      dismissPrompt();
+      return void sendMessage();
+    }
     setDraft(draftKey, "");
     answerPrompt(text);
   }
 
   return (
+    <SidebarControlContext.Provider value={sidebarControl}>
     <div className="app">
-      {sidebarOpen && (
+      {(isMobile || sidebarOpen) && (
         <Sidebar
           chats={chats}
           folders={chatFolders.folders}
@@ -1168,26 +1468,40 @@ export default function App() {
           runningChatIds={sidebarRunningIds}
           envKey={pickerEnvKey}
           onEnvChange={changeEnv}
-          onNewChat={() => { startNewChat(); setActivePanel("chat"); }}
-          onClose={() => setSidebarOpen(false)}
-          onSwitch={switchToChat}
-          onOpenSearch={() => setSearchOpen(true)}
+          onNewChat={fromDrawer(() => { startNewChat(); setActivePanel("chat"); })}
+          onClose={() => (isMobile ? closeDrawer() : setSidebarOpen(false))}
+          onSwitch={fromDrawer(switchToChat)}
+          onOpenSearch={fromDrawer(() => setSearchOpen(true))}
           chatsLoading={!chatsHydrated}
           onDelete={deleteChat}
           onRename={renameChat}
-          onOpenSops={() => setActivePanel("sops")}
-          onOpenMemory={() => setActivePanel("memory")}
-          onOpenAgents={() => setActivePanel("agents")}
-          onOpenAnalytics={() => setActivePanel("analytics")}
-          onOpenSettings={() => setActivePanel("settings")}
-          activePanel={activePanel}
+          onOpenHome={fromDrawer(goHome)}
+          onOpenSops={fromDrawer(() => openPage(PANEL_PATHS.sops))}
+          onOpenMemory={fromDrawer(() => openPage(PANEL_PATHS.memory))}
+          onOpenAgents={fromDrawer(() => openPage(PANEL_PATHS.agents))}
+          onOpenSettings={fromDrawer(() => openPage(settingsPath(settingsTab)))}
+          activePanel={activePanel === "chat" && !activeChatId && !blankChat ? "home" : activePanel}
+          drawer={isMobile ? { open: drawerOpen } : undefined}
         />
       )}
-      <div className="main">
+      {isMobile && (
+        <div
+          className={`sidebar-scrim${drawerOpen ? " is-open" : ""}`}
+          aria-hidden="true"
+          onClick={() => closeDrawer()}
+        />
+      )}
+      <div className="main" ref={mainRef}>
         {activePanel === "home" ? (
           <SkillPanel />
         ) : activePanel === "sops" ? (
-          <SopPanel />
+          <SopPanel
+            openId={sopId}
+            onOpenChange={(id, replace) => {
+              setSopId(id);
+              navigate(id === null ? PANEL_PATHS.sops : sopPath(id), replace ? "replace" : "push");
+            }}
+          />
         ) : activePanel === "memory" ? (
           <MemoryPanel />
         ) : activePanel === "agents" ? (
@@ -1195,26 +1509,21 @@ export default function App() {
         ) : activePanel === "settings" ? (
           <SettingsPanel
             tab={settingsTab}
-            onTabChange={setSettingsTab}
+            onTabChange={(tab) => openPage(settingsPath(tab))}
+            focusTool={focusTool}
             reloadKey={settingsKey}
             folders={chatFolders.folders}
             chats={chats}
             onCreateFolder={chatFolders.createFolder}
             onMoveChats={chatFolders.moveChats}
           />
-        ) : activePanel === "analytics" ? (
-          <React.Suspense fallback={<div className="sop-panel-empty" style={{ padding: 24 }}>Loading analytics…</div>}>
-            <AnalyticsPanel />
-          </React.Suspense>
         ) : (
           <>
         <ChatHeader
-          sidebarOpen={sidebarOpen}
           chatTitle={activeChat?.title}
           activeAgent={activeChat?.agentId ? agentById.get(activeChat.agentId) : undefined}
           displaySessionId={displaySessionId}
           contextPct={contextPct}
-          onOpenSidebar={() => setSidebarOpen(true)}
           onOpenResult={(id) => {
             if (displaySessionId) setViewingResult({ id, sessionId: displaySessionId });
           }}
@@ -1234,10 +1543,10 @@ export default function App() {
               <span>Loading conversation…</span>
             )}
           </div>
-        ) : displayMessages.length === 0 ? (
+        ) : displayMessages.length === 0 && !blankChat ? (
           <div className="chat-home">
             <div className="chat-home-inner">
-              <ChatHero />
+              <ChatHero agent={activeChat?.agentId ? agentById.get(activeChat.agentId) : undefined} />
               <MessageInput
                 variant="hero"
                 input={input}
@@ -1249,16 +1558,30 @@ export default function App() {
                 activeAgentId={activeChat?.agentId}
                 onSelectAgent={(agent) => {
                   if (agent) openAgentChat(agent);
-                  else startNewChat();
+                  // Back to plain Rye: stay on Home.
+                  else goHome();
                 }}
                 onInput={setInput}
-                onSend={sendMessage}
+                onSend={() => void sendMessage()}
+                attachments={draftFiles}
+                onAddFiles={(files) => addFiles(draftKey, files)}
+                onRemoveAttachment={(key) => removeFile(draftKey, key)}
+                references={draftRefs}
+                onAddReference={(ref) => addRef(draftKey, ref)}
+                onRemoveReference={(key) => removeRef(draftKey, key)}
               />
               <ChatExamples onSelect={setInput} />
             </div>
           </div>
         ) : (
           <>
+        <div className="chat-stage">
+        {/* A blank new chat shows the greeting where the messages will be; the first message floats it away. */}
+        {(displayMessages.length === 0 || (heroExitId !== null && heroExitId === activeChatId)) && (
+          <div className={`chat-blank-hero${displayMessages.length > 0 ? " is-leaving" : ""}`} aria-hidden={displayMessages.length > 0}>
+            <ChatHero agent={activeChat?.agentId ? agentById.get(activeChat.agentId) : undefined} />
+          </div>
+        )}
         <MessageList
           messages={displayMessages}
           chatId={activeChatId}
@@ -1276,6 +1599,7 @@ export default function App() {
           pendingPrompt={visiblePrompt ?? undefined}
           onPromptAnswer={answerPrompt}
         />
+        </div>
         <MessageInput
           input={input}
           loading={loading}
@@ -1303,6 +1627,12 @@ export default function App() {
           onInput={setInput}
           onSend={sendFromComposer}
           promptPending={composerPrompt}
+          attachments={draftFiles}
+          onAddFiles={(files) => addFiles(draftKey, files)}
+          onRemoveAttachment={(key) => removeFile(draftKey, key)}
+          references={draftRefs}
+          onAddReference={(ref) => addRef(draftKey, ref)}
+          onRemoveReference={(key) => removeRef(draftKey, key)}
         />
           </>
         )}
@@ -1316,6 +1646,12 @@ export default function App() {
           agentName={(id) => agentById.get(id)?.name}
           onClose={() => setSearchOpen(false)}
           onOpenAgent={openAgentChat}
+          onNewChat={(draft) => {
+            startNewChat();
+            setActivePanel("chat");
+            // What was typed in search becomes the new chat's draft, ready to send or edit.
+            if (draft) setDraft(NEW_CHAT_DRAFT, draft);
+          }}
           onOpen={(chatId, messageIndex) => {
             const chat = chatsRef.current.find((c) => c.id === chatId);
             if (!chat) return;
@@ -1356,5 +1692,6 @@ export default function App() {
         onDismiss={() => chatFolders.suggestion && chatFolders.resolveSuggestion(chatFolders.suggestion, false)}
       />
     </div>
+    </SidebarControlContext.Provider>
   );
 }

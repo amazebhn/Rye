@@ -2,6 +2,9 @@ import React, { useEffect, useState } from "react";
 import { RefreshCw, Search, Brain, BookMarked, Plus, Trash2, X, Pencil, Sparkles, Database } from "lucide-react";
 import { useMemories } from "../../contexts/MemoryContext";
 import type { KnowledgeDoc, KnowledgeSearchHit, Memory, MemoryKind } from "../../contexts/MemoryContext";
+import SidebarButton from "../shell/SidebarButton";
+import MobileListControls, { PullToRefresh, SheetAction, SheetOptions, SheetSection } from "../shared/MobileListControls";
+import { useIsMobile } from "../../utils/viewport";
 
 type MemoryTab = "facts" | "knowledge";
 
@@ -182,6 +185,9 @@ export default function MemoryPanel() {
   const [tab, setTab] = useState<MemoryTab>("facts");
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<MemoryKind | "all">("all");
+  // Set only from the phone filter sheet; "all" everywhere else.
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const isMobile = useIsMobile();
   const [adding, setAdding] = useState(false);
   const [editingDoc, setEditingDoc] = useState<KnowledgeDoc | null>(null);
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
@@ -234,6 +240,7 @@ export default function MemoryPanel() {
   const filteredMemories = (memories ?? []).filter((m) => {
     const kind: MemoryKind = m.kind ?? "fact";
     if (kindFilter !== "all" && kind !== kindFilter) return false;
+    if (categoryFilter !== "all" && (m.category || "general") !== categoryFilter) return false;
     if (query.trim() === "") return true;
     const q = query.toLowerCase();
     return (
@@ -260,10 +267,84 @@ export default function MemoryPanel() {
 
   const isLoading = tab === "facts" ? memoriesLoading : knowledgeLoading;
 
+  const inCategory = (category: string) => categoryFilter === "all" || (category || "general") === categoryFilter;
+  const shownDocs = (knowledgeDocs ?? []).filter((d) => inCategory(d.category));
+  const shownHits = ragHits?.filter((h) => inCategory(h.category)) ?? null;
+
+  // ── Phone width: filters in a bottom sheet (MobileListControls) ──────────
+  function switchTab(next: MemoryTab) {
+    setTab(next);
+    setAdding(false);
+    setEditingDoc(null);
+    setCategoryFilter("all");
+  }
+  const categoryCounts = new Map<string, number>();
+  for (const item of tab === "facts" ? memories ?? [] : knowledgeDocs ?? []) {
+    const cat = item.category || "general";
+    categoryCounts.set(cat, (categoryCounts.get(cat) ?? 0) + 1);
+  }
+  const categoryOptions = [
+    { value: "all", label: "All" },
+    ...[...categoryCounts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([cat, count]) => ({ value: cat, label: cat, count })),
+  ];
+  const activeFilters = (tab === "facts" && kindFilter !== "all" ? 1 : 0) + (categoryFilter !== "all" ? 1 : 0);
+  const mobileFilters = (
+    <>
+      {tab === "facts" ? (
+        <SheetOptions
+          label="Type"
+          value={kindFilter}
+          onChange={setKindFilter}
+          options={(["all", "fact", "acronym", "term"] as const).map((k) => ({
+            value: k,
+            label: k === "all" ? "All" : `${KIND_LABELS[k]}s`,
+          }))}
+        />
+      ) : (
+        <SheetSection label="Search">
+          <p className="mlc-sheet-note">
+            Notes are retrieved automatically via hybrid RAG on relevant turns. Using {embeddingBadge}.
+          </p>
+        </SheetSection>
+      )}
+      {categoryCounts.size > 0 && (
+        <SheetOptions label="Category" value={categoryFilter} onChange={setCategoryFilter} options={categoryOptions} />
+      )}
+      {tab === "knowledge" && (
+        <SheetSection label="More">
+          <div className="mlc-actions">
+            <SheetAction
+              icon={Sparkles}
+              label={reindexing ? "Re-indexing…" : "Re-index & re-embed all notes"}
+              onClick={() => void handleReindex()}
+              busy={reindexing}
+            />
+          </div>
+        </SheetSection>
+      )}
+    </>
+  );
+
   return (
     <div className="sop-panel">
       <div className="sop-panel-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <SidebarButton />
+        {isMobile && (
+          <>
+            <h2 className="sop-panel-title">Memory</h2>
+            <button
+              type="button"
+              className="sop-new-btn mlc-primary"
+              onClick={() => { setEditingDoc(null); setAdding((v) => !v); }}
+            >
+              {adding ? <X size={15} aria-hidden="true" /> : <Plus size={15} aria-hidden="true" />}
+              {adding ? "Close" : tab === "facts" ? "New Fact" : "New Note"}
+            </button>
+          </>
+        )}
+        {!isMobile && <div className="memory-header-main" style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <h2 className="sop-panel-title">Memory</h2>
           <div style={{ display: "inline-flex", gap: 4, background: "var(--main-surface)", padding: 3, borderRadius: 8, border: "1px solid var(--main-border)" }}>
             <button
@@ -285,9 +366,9 @@ export default function MemoryPanel() {
               {knowledgeDocs !== null && <span style={{ opacity: 0.75, fontSize: 11 }}>({knowledgeDocs.length})</span>}
             </button>
           </div>
-        </div>
+        </div>}
 
-        <div className="sop-panel-toolbar">
+        {!isMobile && <div className="sop-panel-toolbar">
           <div className="sop-search-wrap">
             <Search size={13} className="sop-search-icon" />
             <input
@@ -323,11 +404,11 @@ export default function MemoryPanel() {
             {adding ? <X size={13} /> : <Plus size={13} />}
             {adding ? "Close" : tab === "facts" ? "New Fact" : "New Note"}
           </button>
-        </div>
+        </div>}
       </div>
 
-      {/* Sub-bar: type filter for Facts, embedding status for Knowledge */}
-      {tab === "facts" && (
+      {/* Sub-bar: type filter for Facts, embedding status for Knowledge (in the filter sheet on a phone) */}
+      {tab === "facts" && !isMobile && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderBottom: "1px solid var(--main-border)", fontSize: 12 }}>
           <span style={{ color: "var(--main-fg-faint)", marginRight: 4 }}>Always in prompt:</span>
           {(["all", "fact", "acronym", "term"] as const).map((k) => (
@@ -343,7 +424,7 @@ export default function MemoryPanel() {
         </div>
       )}
 
-      {tab === "knowledge" && (
+      {tab === "knowledge" && !isMobile && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", borderBottom: "1px solid var(--main-border)", fontSize: 12, color: "var(--main-fg-faint)" }}>
           <span>Retrieved automatically via hybrid RAG on relevant turns — keeps system prompts lean.</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11 }}>
@@ -360,6 +441,21 @@ export default function MemoryPanel() {
       )}
 
       <div className="sop-panel-body">
+        <PullToRefresh onRefresh={() => (tab === "facts" ? refreshMemories() : refreshKnowledge())} />
+        {isMobile && (
+          <div className="mlc-segment" role="tablist" aria-label="Memory">
+            <button type="button" role="tab" aria-selected={tab === "facts"} onClick={() => switchTab("facts")}>
+              <Brain size={15} aria-hidden="true" />
+              Facts & Glossary
+              {memories !== null && <span className="mlc-segment-count">{memories.length}</span>}
+            </button>
+            <button type="button" role="tab" aria-selected={tab === "knowledge"} onClick={() => switchTab("knowledge")}>
+              <BookMarked size={15} aria-hidden="true" />
+              Knowledge
+              {knowledgeDocs !== null && <span className="mlc-segment-count">{knowledgeDocs.length}</span>}
+            </button>
+          </div>
+        )}
         {/* ── TAB 1: FACTS & GLOSSARY ──────────────────────────────────────── */}
         {tab === "facts" && (
           <>
@@ -404,7 +500,7 @@ export default function MemoryPanel() {
                             )}
                           </td>
                           <td className="sop-table-td" style={{ verticalAlign: "top" }}>{m.value}</td>
-                          <td className="sop-table-td" style={{ width: 110, whiteSpace: "nowrap", color: "var(--main-fg-faint)", verticalAlign: "top" }}>
+                          <td className="sop-table-td sop-table-col--secondary" style={{ width: 110, whiteSpace: "nowrap", color: "var(--main-fg-faint)", verticalAlign: "top" }}>
                             {formatDate(m.updated_at)}
                           </td>
                           <td className="sop-table-td" style={{ width: 32, textAlign: "right", verticalAlign: "top" }}>
@@ -432,15 +528,15 @@ export default function MemoryPanel() {
             {query.trim() !== "" && (
               <div style={{ marginBottom: 20 }}>
                 <div className="sidebar-time-group">
-                  {ragSearching ? "Searching…" : `RAG matches (${ragHits?.length ?? 0})`}
+                  {ragSearching ? "Searching…" : `RAG matches (${shownHits?.length ?? 0})`}
                 </div>
-                {!ragSearching && ragHits && ragHits.length === 0 && (
+                {!ragSearching && shownHits && shownHits.length === 0 && (
                   <div className="sop-panel-empty">No matching knowledge chunks for "{query}".</div>
                 )}
-                {!ragSearching && ragHits && ragHits.length > 0 && (
+                {!ragSearching && shownHits && shownHits.length > 0 && (
                   <table className="sop-table">
                     <tbody>
-                      {ragHits.map((hit, i) => (
+                      {shownHits.map((hit, i) => (
                         <tr key={`${hit.doc_id}:${i}`} className="sop-table-row">
                           <td className="sop-table-td" style={{ width: "24%", verticalAlign: "top" }}>
                             <div style={{ fontWeight: 600 }}>{hit.title}</div>
@@ -478,7 +574,7 @@ export default function MemoryPanel() {
             {!knowledgeLoading && (knowledgeDocs?.length ?? 0) > 0 && query.trim() === "" && (
               <table className="sop-table">
                 <tbody>
-                  {(knowledgeDocs ?? []).map((doc) => {
+                  {shownDocs.map((doc) => {
                     const expanded = expandedDocId === doc.id;
                     return (
                       <tr key={doc.id} className="sop-table-row">
@@ -508,7 +604,7 @@ export default function MemoryPanel() {
                             ? doc.content
                             : `${doc.content.slice(0, 220)}…`}
                         </td>
-                        <td className="sop-table-td" style={{ width: 110, whiteSpace: "nowrap", color: "var(--main-fg-faint)", verticalAlign: "top" }}>
+                        <td className="sop-table-td sop-table-col--secondary" style={{ width: 110, whiteSpace: "nowrap", color: "var(--main-fg-faint)", verticalAlign: "top" }}>
                           {formatDate(doc.updated_at)}
                         </td>
                         <td className="sop-table-td" style={{ width: 64, textAlign: "right", verticalAlign: "top", whiteSpace: "nowrap" }}>
@@ -535,6 +631,16 @@ export default function MemoryPanel() {
             )}
           </>
         )}
+        <MobileListControls
+          query={query}
+          onQueryChange={setQuery}
+          searchLabel={tab === "facts" ? "Search facts & glossary" : "Search knowledge"}
+          searchPlaceholder={tab === "facts" ? "Filter facts & glossary…" : "Semantic + keyword search…"}
+          filters={mobileFilters}
+          activeFilters={activeFilters}
+          onResetFilters={() => { setKindFilter("all"); setCategoryFilter("all"); }}
+          hidden={adding || editingDoc !== null}
+        />
       </div>
     </div>
   );

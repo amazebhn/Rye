@@ -13,7 +13,6 @@ import {
   MoreHorizontal,
   Pencil,
   FilePlus,
-  Upload,
   Download,
   Trash2,
   Copy,
@@ -25,6 +24,9 @@ import { useSops } from "../../contexts/SopContext";
 import type { SOP } from "../../contexts/SopContext";
 import SopChatSheet, { type PendingDraft } from "./SopChatSheet";
 import NewSopModal from "./NewSopModal";
+import SidebarButton from "../shell/SidebarButton";
+import MobileListControls, { PullToRefresh, SheetOptions } from "../shared/MobileListControls";
+import { useIsMobile } from "../../utils/viewport";
 
 type ViewMode = "card" | "list";
 type SortField = "title" | "updated_at" | "created_at";
@@ -138,7 +140,14 @@ function SopMenu({ sop, onRename, onDelete, onDuplicate }: SopMenuProps) {
 }
 
 // ── Main panel ────────────────────────────────────────────────────────────
-export default function SopPanel() {
+interface SopPanelProps {
+  /** The SOP the address names (/sops/<id>), or null for the list. Left out, the panel keeps its own. */
+  openId?: number | null;
+  /** Called when the user opens an SOP or goes back to the list; `replace` when the address named one that doesn't exist. */
+  onOpenChange?: (id: number | null, replace?: boolean) => void;
+}
+
+export default function SopPanel({ openId, onOpenChange }: SopPanelProps = {}) {
   const { sops, sopsLoading, refreshSops, deleteSop, renameSop, duplicateSop } = useSops();
   const [query, setQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("card");
@@ -154,6 +163,7 @@ export default function SopPanel() {
   const [diffMode, setDiffMode] = useState<"diff" | "preview">("diff");
   const [creating, setCreating] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (sops === null) void refreshSops();
@@ -168,7 +178,30 @@ export default function SopPanel() {
     else { setSortField(field); setSortDir("asc"); }
   }
 
-  function openSop(sop: SOP) { setActiveSop(sop); setChatOpen(false); setPendingDraft(null); }
+  function showSop(sop: SOP | null) { setActiveSop(sop); setChatOpen(false); setPendingDraft(null); }
+  function openSop(sop: SOP) { showSop(sop); onOpenChange?.(sop.id); }
+  function closeSop() { showSop(null); onOpenChange?.(null); }
+
+  // Follow the address: /sops/<id> shows that SOP, /sops the list.
+  const activeIdRef = useRef<number | null>(null);
+  activeIdRef.current = activeSop?.id ?? null;
+  useEffect(() => {
+    if (openId === undefined || openId === activeIdRef.current) return;
+    if (openId === null) {
+      showSop(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch(`/sop/${openId}`)
+      .then((r) => (r.ok ? (r.json() as Promise<SOP>) : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((sop) => { if (!cancelled) showSop(sop); })
+      .catch(() => {
+        if (cancelled) return;
+        showSop(null);
+        onOpenChange?.(null, true);
+      });
+    return () => { cancelled = true; };
+  }, [openId]);
 
   function handleCreated(sop: SOP) {
     void refreshSops();
@@ -264,6 +297,41 @@ export default function SopPanel() {
     return sortDir === "asc" ? cmp : -cmp;
   });
 
+  // Phone width: the toolbar's view toggle, sort and import move to the filter sheet (MobileListControls).
+  const sortChanged = sortField !== "title" || sortDir !== "asc";
+  const mobileFilters = (
+    <>
+      <SheetOptions
+        label="View"
+        value={viewMode}
+        onChange={setViewMode}
+        options={[
+          { value: "card", label: "Cards", icon: LayoutGrid },
+          { value: "list", label: "List", icon: List },
+        ]}
+      />
+      <SheetOptions
+        label="Sort by"
+        value={sortField}
+        onChange={setSortField}
+        options={[
+          { value: "title", label: "Name" },
+          { value: "updated_at", label: "Updated" },
+          { value: "created_at", label: "Created" },
+        ]}
+      />
+      <SheetOptions
+        label="Order"
+        value={sortDir}
+        onChange={setSortDir}
+        options={[
+          { value: "asc", label: sortField === "title" ? "A to Z" : "Oldest first" },
+          { value: "desc", label: sortField === "title" ? "Z to A" : "Newest first" },
+        ]}
+      />
+    </>
+  );
+
   // ── Detail view ───────────────────────────────────────────────────────
   if (activeSop) {
     const diff = pendingDraft ? lineDiff(pendingDraft.original_content, pendingDraft.proposed_content) : null;
@@ -271,9 +339,10 @@ export default function SopPanel() {
     return (
       <div className="sop-panel">
         <div className="sop-panel-header sop-panel-header--detail">
+          <SidebarButton />
           <button
             className="sop-header-icon-btn"
-            onClick={() => { setActiveSop(null); setChatOpen(false); setPendingDraft(null); }}
+            onClick={closeSop}
             title="Back to SOPs"
             aria-label="Back to SOPs"
           >
@@ -380,10 +449,31 @@ export default function SopPanel() {
         <NewSopModal
           onCreated={handleCreated}
           onClose={() => setCreating(false)}
+          onImport={() => {
+            // Open the chooser inside the click (browsers only allow it during a user gesture), then close.
+            importRef.current?.click();
+            setCreating(false);
+          }}
         />
       )}
       <div className="sop-panel-header">
+        <SidebarButton />
         <h2 className="sop-panel-title">SOPs</h2>
+        {isMobile ? (
+          <>
+            <button type="button" className="sop-new-btn mlc-primary" onClick={() => setCreating(true)}>
+              <FilePlus size={15} aria-hidden="true" />
+              New SOP
+            </button>
+            <input
+              ref={importRef}
+              type="file"
+              accept=".md,.json"
+              style={{ display: "none" }}
+              onChange={handleImport}
+            />
+          </>
+        ) : (
         <div className="sop-panel-toolbar">
           <div className="sop-search-wrap">
             <Search size={13} className="sop-search-icon" />
@@ -417,13 +507,7 @@ export default function SopPanel() {
             <RefreshCw size={13} className={sopsLoading ? "spin" : ""} />
           </button>
           <div className="sop-toolbar-divider" />
-          <button
-            className="icon-btn faint"
-            onClick={() => importRef.current?.click()}
-            title="Import SOP (.md or .json)"
-          >
-            <Upload size={14} />
-          </button>
+          {/* Import is an option in the New SOP dialog; this is the file chooser it opens. */}
           <input
             ref={importRef}
             type="file"
@@ -439,9 +523,11 @@ export default function SopPanel() {
             New SOP
           </button>
         </div>
+        )}
       </div>
 
       <div className="sop-panel-body">
+        <PullToRefresh onRefresh={refreshSops} />
         {sopsLoading && <div className="sop-panel-empty">Loading…</div>}
 
         {!sopsLoading && (sops?.length ?? 0) === 0 && (
@@ -518,7 +604,7 @@ export default function SopPanel() {
                       {sortField === "updated_at" ? (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />) : <ChevronUp size={11} className="sop-table-sort-idle" />}
                     </span>
                   </th>
-                  <th className="sop-table-th" onClick={() => toggleSort("created_at")}>
+                  <th className="sop-table-th sop-table-col--secondary" onClick={() => toggleSort("created_at")}>
                     <span>Created</span>
                     <span className="sop-table-sort-icon">
                       {sortField === "created_at" ? (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />) : <ChevronUp size={11} className="sop-table-sort-idle" />}
@@ -551,7 +637,7 @@ export default function SopPanel() {
                       )}
                     </td>
                     <td className="sop-table-td">{formatDate(sop.updated_at)}</td>
-                    <td className="sop-table-td">{formatDate(sop.created_at)}</td>
+                    <td className="sop-table-td sop-table-col--secondary">{formatDate(sop.created_at)}</td>
                     <td className="sop-table-td sop-table-td--action" onClick={(e) => e.stopPropagation()}>
                       <SopMenu
                         sop={sop}
@@ -566,200 +652,15 @@ export default function SopPanel() {
             </table>
           )
         )}
-      </div>
-    </div>
-  );
-
-  // ── List / Card view ──────────────────────────────────────────────────
-  return (
-    <div className="sop-panel">
-      {creating && (
-        <NewSopModal
-          onCreated={handleCreated}
-          onClose={() => setCreating(false)}
+        <MobileListControls
+          query={query}
+          onQueryChange={setQuery}
+          searchLabel="Search SOPs"
+          searchPlaceholder="Search SOPs…"
+          filters={mobileFilters}
+          activeFilters={sortChanged ? 1 : 0}
+          onResetFilters={() => { setSortField("title"); setSortDir("asc"); }}
         />
-      )}
-      <div className="sop-panel-header">
-        <h2 className="sop-panel-title">SOPs</h2>
-        <div className="sop-panel-toolbar">
-          <div className="sop-search-wrap">
-            <Search size={13} className="sop-search-icon" />
-            <input
-              className="sop-search-input"
-              placeholder="Search SOPs…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
-          <button
-            className={`icon-btn sop-view-btn${viewMode === "card" ? " active" : " faint"}`}
-            onClick={() => setViewMode("card")}
-            title="Card view"
-          >
-            <LayoutGrid size={14} />
-          </button>
-          <button
-            className={`icon-btn sop-view-btn${viewMode === "list" ? " active" : " faint"}`}
-            onClick={() => setViewMode("list")}
-            title="List view"
-          >
-            <List size={14} />
-          </button>
-          <button
-            className="icon-btn faint"
-            onClick={() => void refreshSops()}
-            disabled={sopsLoading}
-            title="Refresh"
-          >
-            <RefreshCw size={13} className={sopsLoading ? "spin" : ""} />
-          </button>
-          <div className="sop-toolbar-divider" />
-          <button
-            className="icon-btn faint"
-            onClick={() => importRef.current?.click()}
-            title="Import SOP (.md or .json)"
-          >
-            <Upload size={14} />
-          </button>
-          <input
-            ref={importRef}
-            type="file"
-            accept=".md,.json"
-            style={{ display: "none" }}
-            onChange={handleImport}
-          />
-          <button className="sop-new-btn" onClick={() => setCreating(true)}>
-            <FilePlus size={13} />
-            New SOP
-          </button>
-        </div>
-      </div>
-
-      <div className="sop-panel-body">
-        {sopsLoading && <div className="sop-panel-empty">Loading…</div>}
-
-        {!sopsLoading && (sops?.length ?? 0) === 0 && (
-          <div className="sop-panel-zero">
-            <BookOpen size={32} className="sop-panel-zero-icon" />
-            <p>No SOPs saved yet.</p>
-            <p className="sop-panel-zero-sub">
-              Ask the agent to document a process and it will appear here.
-            </p>
-          </div>
-        )}
-
-        {!sopsLoading && (sops?.length ?? 0) > 0 && filtered.length === 0 && (
-          <div className="sop-panel-empty">No SOPs match "{query}".</div>
-        )}
-
-        {!sopsLoading && filtered.length > 0 && (
-          viewMode === "card" ? (
-            <div className="sop-card-grid">
-              {filtered.map((sop) => (
-                <div key={sop.id} className="sop-card" onClick={() => openSop(sop)}>
-                  <div className="sop-card-header">
-                    {renamingId !== null && renamingId === sop.id ? (
-                      <input
-                        ref={renameRef}
-                        className="sop-inline-rename"
-                        value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onBlur={() => void commitRename()}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void commitRename();
-                          if (e.key === "Escape") setRenamingId(null);
-                          e.stopPropagation();
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      <div className="sop-card-title">{sop.title}</div>
-                    )}
-                    <SopMenu
-                      sop={sop}
-                      onRename={() => startRename(sop)}
-                      onDelete={() => void deleteSop(sop.id)}
-                      onDuplicate={() => void duplicateSop(sop.id)}
-                    />
-                  </div>
-                  <div className="sop-card-preview">
-                    {sop.content.replace(/^#+\s.*/gm, "").trim().slice(0, 120)}
-                    {sop.content.length > 120 ? "…" : ""}
-                  </div>
-                  <div className="sop-card-footer">
-                    <span className="sop-card-date">{formatDate(sop.updated_at)}</span>
-                    <span className="sop-card-ai-hint">
-                      <AiMark size={11} className="sop-card-ai-icon" />
-                      Edit with AI
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <table className="sop-table">
-              <thead>
-                <tr>
-                  <th className="sop-table-th sop-table-th--name" onClick={() => toggleSort("title")}>
-                    <span>Name</span>
-                    <span className="sop-table-sort-icon">
-                      {sortField === "title" ? (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />) : <ChevronUp size={11} className="sop-table-sort-idle" />}
-                    </span>
-                  </th>
-                  <th className="sop-table-th" onClick={() => toggleSort("updated_at")}>
-                    <span>Updated</span>
-                    <span className="sop-table-sort-icon">
-                      {sortField === "updated_at" ? (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />) : <ChevronUp size={11} className="sop-table-sort-idle" />}
-                    </span>
-                  </th>
-                  <th className="sop-table-th" onClick={() => toggleSort("created_at")}>
-                    <span>Created</span>
-                    <span className="sop-table-sort-icon">
-                      {sortField === "created_at" ? (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />) : <ChevronUp size={11} className="sop-table-sort-idle" />}
-                    </span>
-                  </th>
-                  <th className="sop-table-th sop-table-th--action" />
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((sop) => (
-                  <tr key={sop.id} className="sop-table-row" onClick={() => openSop(sop)}>
-                    <td className="sop-table-td sop-table-td--name">
-                      <BookOpen size={12} className="sop-table-icon" />
-                      {renamingId !== null && renamingId === sop.id ? (
-                        <input
-                          ref={renameRef}
-                          className="sop-inline-rename sop-inline-rename--table"
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onBlur={() => void commitRename()}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void commitRename();
-                            if (e.key === "Escape") setRenamingId(null);
-                            e.stopPropagation();
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      ) : (
-                        sop.title
-                      )}
-                    </td>
-                    <td className="sop-table-td">{formatDate(sop.updated_at)}</td>
-                    <td className="sop-table-td">{formatDate(sop.created_at)}</td>
-                    <td className="sop-table-td sop-table-td--action" onClick={(e) => e.stopPropagation()}>
-                      <SopMenu
-                        sop={sop}
-                        onRename={() => startRename(sop)}
-                        onDelete={() => void deleteSop(sop.id)}
-                        onDuplicate={() => void duplicateSop(sop.id)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )
-        )}
       </div>
     </div>
   );

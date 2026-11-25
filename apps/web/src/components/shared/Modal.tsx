@@ -29,10 +29,11 @@ export function useModalClose() {
   return useContext(ModalCloseContext);
 }
 
-export function ModalCancelButton({ label = "Cancel" }: { label?: string }) {
+/** `autoFocus` for a dialog that confirms something destructive: Enter then cancels rather than deletes. */
+export function ModalCancelButton({ label = "Cancel", autoFocus = false }: { label?: string; autoFocus?: boolean }) {
   const close = useModalClose();
   return (
-    <button type="button" className="btn btn--ghost btn--sm" onClick={close}>
+    <button type="button" className="btn btn--ghost btn--sm" onClick={close} autoFocus={autoFocus}>
       {label}
     </button>
   );

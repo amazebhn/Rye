@@ -149,6 +149,8 @@
 .settings-retrieval-loading { min-height: 132px; padding: 14px 16px; }
 .settings-retrieval-loading .settings-placeholder { margin: 0; }
 .settings-retrieval-server .form-input { max-width: 420px; }
+/* General page: the "Your name" field beside its label. */
+.settings-profile .form-input { width: 240px; max-width: 100%; flex-shrink: 0; }
 .settings-retrieval-server .form-label { margin-top: 10px; }
 .settings-retrieval-server .settings-decision-status { margin-top: 6px; }
 .settings-confirm { display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; line-height: 1.55; color: var(--main-fg); }
@@ -310,8 +312,9 @@ label.settings-task-text { cursor: pointer; }
 /* Stands in for the tier cards while Models loads, at about their height. */
 .settings-loading { min-height: 138px; display: flex; align-items: center; justify-content: center; }
 
-/* Narrow windows: the list becomes a row of pills above the page. */
-@media (max-width: 760px) {
+/* Narrow windows (and a tablet, where the sidebar column takes 288px of it): the list becomes a row of
+   pills above the page, and footers and list toolbars wrap instead of running past the edge. */
+@media (max-width: 1023px) {
   .settings-layout { flex-direction: column; }
   .settings-nav {
     width: auto;
@@ -324,12 +327,149 @@ label.settings-task-text { cursor: pointer; }
   }
   .settings-nav-item { flex-shrink: 0; white-space: nowrap; }
   .settings-page { padding: 18px 16px; }
+  .settings-foot { flex-direction: column; align-items: flex-start; }
+  .settings-foot p { min-width: 0; overflow-wrap: anywhere; }
+  .settings-list-toolbar { flex-wrap: wrap; row-gap: 8px; }
 }
 
-/* A section whose heading shares a row with its actions. */
-.settings-section-bar { display: flex; align-items: flex-end; gap: 16px; }
-.settings-section-bar > .settings-section-head { flex: 1; min-width: 0; }
-.settings-section-bar > .sop-panel-toolbar { flex-shrink: 0; }
+/* Phone width (MOBILE_BREAKPOINT in utils/viewport.ts): the pill row scrolls edge to edge and the
+   list search takes a row of its own. */
+@media (max-width: 767px) {
+  .settings-nav { padding: 8px 16px; scrollbar-width: none; }
+  .settings-nav::-webkit-scrollbar { display: none; }
+  .settings-nav-item { min-height: 36px; }
+  .settings-page { padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+  .settings-list-toolbar > .settings-list-search { flex: 1 1 100%; }
+  .settings-list-toolbar .settings-list-primary { min-width: 0; }
+}
+
+/*
+ * A page that lists things (Skills, MCP servers, Integrations) starts with SettingsListHeader: the
+ * heading on a row of its own, then the toolbar. Every size here is fixed so that switching between
+ * those pages moves nothing: search and view toggle on the left, page actions and the primary button
+ * on the right, the primary button the same width whatever its label.
+ */
+.settings-list-bar { display: flex; flex-direction: column; gap: 14px; }
+.settings-list-toolbar { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.settings-list-search { flex: 0 1 260px; min-width: 0; }
+.settings-list-search .sop-search-input {
+  width: 100%;
+  height: 30px;
+  border-color: var(--main-border);
+  border-radius: var(--radius-md);
+  background: var(--main-bg);
+  color: var(--main-fg);
+  font-size: 12.5px;
+}
+.settings-list-search .sop-search-input:focus { border-color: var(--main-accent); }
+.settings-list-search .sop-search-input::placeholder { color: var(--main-fg-faint); }
+.settings-list-views {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-md);
+}
+.settings-list-views .sop-view-btn { width: 24px; height: 24px; padding: 0; border-radius: var(--radius-sm); }
+.settings-list-views .sop-view-btn:not(:disabled):hover { color: var(--main-fg); }
+.settings-list-views .sop-view-btn.active { background: var(--main-surface-alt); color: var(--main-accent); }
+.settings-list-views .sop-view-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.settings-list-actions { flex-shrink: 0; margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.settings-list-actions > .icon-btn { width: 28px; height: 28px; padding: 0; }
+.settings-list-actions > .icon-btn:not(:disabled):hover { background: var(--main-surface); color: var(--main-fg-muted); }
+.settings-list-actions > .icon-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.settings-list-primary { height: 30px; min-width: 128px; justify-content: center; }
+.settings-list-primary:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; }
+.settings-list-search .sop-search-input:disabled,
+.settings-list-views .sop-view-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.settings-list-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.settings-list-primary:disabled:hover { background: var(--color-fg); border-color: var(--color-fg); }
+/* A note under a list, such as the file it is saved in. */
+.settings-list-foot { margin: 0; font-size: 12px; line-height: 1.5; color: var(--main-fg-muted); overflow-wrap: anywhere; }
+.settings-list-foot code { font-size: 12px; }
+/* Integrations: nothing to list yet. */
+.settings-list-zero { border: 1px dashed color-mix(in srgb, var(--main-fg-faint) 45%, var(--main-border)); border-radius: var(--radius-xl); }
+.settings-list-zero.sop-panel-zero { padding: 40px 20px; color: var(--main-fg-muted); }
+.settings-list-zero .sop-panel-zero-sub { max-width: 380px; font-size: 12.5px; line-height: 1.5; color: var(--main-fg-muted); }
+.settings-list-zero .sop-panel-zero-icon { color: var(--main-fg-faint); opacity: 1; }
+
+/* Usage page (UsageSection): the range control, the charts (analytics.css) and the price table. */
+.usage-toolbar { display: flex; align-items: center; gap: 8px; }
+/* The charts fill the page's column (analytics.css centres them with auto margins, which would size them to their content). */
+.settings-section > .analytics-body { width: 100%; max-width: none; min-width: 0; margin: 0; }
+.usage-refresh { width: 30px; height: 30px; padding: 0; color: var(--main-fg-muted); }
+.usage-refresh:hover { background: var(--main-surface); color: var(--main-fg); }
+.usage-refresh:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.usage-pricing { scroll-margin-top: 16px; }
+.usage-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--main-accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.usage-link:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; border-radius: var(--radius-xs); }
+.usage-tool-errors { color: var(--main-fg-faint); }
+.usage-tool-errors.has-errors { color: var(--color-danger); }
+.usage-unpriced { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.usage-unpriced-label { font-size: 12.5px; color: var(--main-fg-muted); margin-right: 2px; }
+.usage-unpriced-chip {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px dashed color-mix(in srgb, var(--main-warning) 55%, var(--main-border));
+  border-radius: var(--radius-pill);
+  background: var(--main-bg);
+  color: var(--main-fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.usage-unpriced-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-unpriced-chip:hover { background: var(--main-surface); }
+.usage-unpriced-chip:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.usage-price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 120px 64px;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 14px 10px 16px;
+}
+.usage-price-row + .usage-price-row,
+.usage-price-empty + .usage-price-row { border-top: 1px solid var(--main-border); }
+.usage-price-head { padding-top: 8px; padding-bottom: 8px; background: var(--main-surface); font-size: 12px; font-weight: 500; color: var(--main-fg-muted); }
+.usage-price-empty { margin: 0; padding: 14px 16px; border-top: 1px solid var(--main-border); border-radius: 0; font-size: 13px; color: var(--main-fg-muted); }
+.usage-price-model { display: flex; flex-direction: column; min-width: 0; font-size: 13.5px; font-weight: 500; color: var(--main-fg); }
+.usage-price-model,
+.usage-price-model code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-price-model code { font-size: 12px; font-weight: 400; color: var(--main-fg-muted); }
+.usage-price-input { position: relative; display: flex; align-items: center; }
+.usage-price-input > span { position: absolute; left: 10px; font-size: 13px; color: var(--main-fg-muted); pointer-events: none; }
+.usage-price-input .form-input { padding: 6px 8px 6px 22px; font-variant-numeric: tabular-nums; }
+.usage-price-action { display: flex; justify-content: flex-end; }
+.usage-price-action.btn { justify-self: end; }
+.usage-price-remove { width: 30px; height: 30px; padding: 0; color: var(--main-fg-muted); }
+.usage-price-remove:hover { background: var(--main-surface); color: var(--color-danger); }
+.usage-price-remove:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.usage-price-new { background: var(--main-surface); }
+/* Phone width (MOBILE_BREAKPOINT): the model on a line of its own, the two prices and the action under it. */
+@media (max-width: 767px) {
+  .usage-price-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; row-gap: 8px; padding: 12px; }
+  .usage-price-row > :first-child { grid-column: 1 / -1; }
+  .usage-price-head { display: none; }
+  .usage-price-head + .usage-price-row,
+  .usage-price-head + .usage-price-empty { border-top: 0; }
+}
 .settings-section-desc code,
 .settings-task-desc code,
 .settings-placeholder code { font-size: 12px; }
@@ -419,6 +559,40 @@ label.settings-task-text { cursor: pointer; }
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+/* Grid view: the Skills cards (sop-card), one per server. Text stays at 12px or larger here. */
+.settings-mcp-grid { margin: 0; padding: 0; list-style: none; }
+.settings-mcp-card { min-width: 0; }
+.settings-mcp-card .sop-card-header { align-items: center; }
+.settings-mcp-card-open {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-mcp-card-open:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 3px; border-radius: var(--radius-xs); }
+.settings-mcp-card-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-mcp-card.is-off .settings-mcp-card-open { color: var(--main-fg-muted); }
+.settings-mcp-card-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+/* The card is already the surface colour, so its badges take an outline to stay visible. */
+.settings-mcp-card-badges .settings-source { margin-left: 0; font-size: 12px; border: 1px solid var(--main-border); background: var(--main-bg); }
+.settings-mcp-card .sop-card-preview { margin: 0; font-size: 12.5px; }
+.settings-mcp-card .sop-card-footer { gap: 8px; min-height: 28px; font-size: 12px; color: var(--main-fg-muted); }
+.settings-mcp-card .sop-menu-btn { opacity: 1; }
+.settings-mcp-card-controls { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.settings-mcp-card-controls .settings-reset { height: 28px; }
+/* The dialog a card opens: its status, then the same details an expanded row shows. */
+.settings-mcp-details { display: flex; flex-direction: column; gap: 12px; }
+.settings-mcp-details-status { display: flex; align-items: center; gap: 12px; }
+.settings-mcp-details-status .settings-mcp-name .settings-source { margin-left: 0; }
+
 /* Add / edit form */
 .settings-mcp-modal { width: 560px; }
 .settings-mcp-choice { align-self: flex-start; }
@@ -464,8 +638,7 @@ a.settings-reset { text-decoration: none; }
   .settings-accents { justify-content: flex-start; max-width: none; }
 }
 
-/* A section with nothing to manage yet. */
-.settings-source.settings-soon { margin-left: 6px; font-size: 12px; vertical-align: 1px; }
+/* A section with nothing to show yet (loading, empty, no match). */
 .settings-placeholder {
   margin: 0;
   padding: 18px 16px;
@@ -487,8 +660,186 @@ a.settings-reset { text-decoration: none; }
   background: var(--main-bg);
 }
 
+/*
+ * Tools: a filter by status, then one row per tool group. In the list the groups share one box (like the
+ * MCP servers list) and open to rows of tools; in the grid each group is a heading over cards.
+ */
+.settings-tools-env { position: relative; flex-shrink: 0; display: inline-flex; align-items: center; width: 160px; }
+.settings-tools-env > svg { position: absolute; left: 10px; color: var(--main-fg-muted); pointer-events: none; }
+.settings-tools-env .settings-select { height: 30px; padding-left: 29px; }
+
+.settings-tools-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 26px; }
+.settings-tools-filter-env { margin-right: 4px; font-size: 12.5px; color: var(--main-fg-muted); }
+.settings-tools-filter-env strong { color: var(--main-fg); font-weight: 600; }
+.settings-tools-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-pill);
+  background: var(--main-bg);
+  color: var(--main-fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.settings-tools-chip:hover { background: var(--main-surface); color: var(--main-fg); }
+.settings-tools-chip.is-active { border-color: var(--main-fg-muted); background: var(--main-surface-alt); color: var(--main-fg); }
+.settings-tools-chip:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; }
+.settings-tools-chip-n { color: var(--main-fg-muted); font-variant-numeric: tabular-nums; }
+
+.settings-tools { display: flex; flex-direction: column; transition: opacity 0.15s; }
+.settings-tools.is-loading { opacity: 0.6; }
+.settings-tools.is-list {
+  border: 1px solid color-mix(in srgb, var(--main-fg-faint) 35%, var(--main-border));
+  border-radius: var(--radius-xl);
+  background: var(--main-bg);
+  overflow: hidden;
+}
+.settings-tools.is-list .settings-tools-group + .settings-tools-group { border-top: 1px solid var(--main-border); }
+.settings-tools.is-card { gap: 22px; }
+
+/* A group's row: chevron, title and tool count over one line of status reason, and the status on the right. */
+.settings-tools-head {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 13px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-tools-head:hover { background: var(--main-surface); }
+.settings-tools-head:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -2px; }
+.settings-tools-head > svg { flex-shrink: 0; margin-top: 4px; color: var(--main-fg-faint); transition: transform 0.12s; }
+.settings-tools-head > svg.is-open { transform: rotate(90deg); }
+/* In the grid the heading's chevron lines up with the cards' left edge. */
+.settings-tools.is-card .settings-tools-head { width: calc(100% + 20px); margin: 0 -10px; padding: 8px 10px; border-radius: var(--radius-md); }
+.settings-tools-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-tools-head-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.settings-tools-group-title { font-size: 13.5px; font-weight: 500; color: var(--main-fg); }
+.settings-tools-group.is-off .settings-tools-group-title { color: var(--main-fg-muted); }
+.settings-tools-count { font-size: 12px; color: var(--main-fg-muted); white-space: nowrap; }
+.settings-tools-reason {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--main-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-tools-group.is-open .settings-tools-reason { white-space: normal; overflow-wrap: anywhere; }
+/* Status: a dot and a word, quiet when all is well and in the warning colour when something needs doing. */
+.settings-tools-status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  font-size: 12.5px;
+  color: var(--main-fg-muted);
+  white-space: nowrap;
+}
+.settings-tools-status.is-partial { color: var(--main-warning-text); font-weight: 500; }
+
+/* An opened group: its connections, a note, then its tools, all lined up under the group's title. */
+.settings-tools-body { display: flex; flex-direction: column; gap: 12px; padding: 0 16px 10px 25px; }
+.settings-tools.is-card .settings-tools-body { padding: 4px 0 0; }
+.settings-tools-conns,
+.settings-tools-note { display: flex; flex-direction: column; gap: 6px; padding: 0 12px; }
+.settings-tools.is-card .settings-tools-conns,
+.settings-tools.is-card .settings-tools-note { padding: 0 0 0 21px; }
+.settings-tools-caption { font-size: 12px; font-weight: 500; color: var(--main-fg-muted); }
+.settings-tools-conns ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+/* Positioned so its screen-reader-only text is placed within the row, not at the panel's edge (where it made the panel scroll). */
+.settings-tools-conns li { position: relative; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; font-size: 12.5px; line-height: 1.5; }
+.settings-tools-conns .settings-mcp-dot { align-self: center; }
+.settings-tools-conns code { font-size: 12px; color: var(--main-fg); }
+.settings-tools-conn-detail { min-width: 0; color: var(--main-fg-muted); overflow-wrap: anywhere; }
+.settings-tools-conns li.is-off .settings-tools-conn-detail { color: var(--main-warning-text); }
+.settings-tools-note p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--main-fg-muted); }
+.settings-tools-link { align-self: flex-start; height: 28px; }
+
+/* Tools: rows divided by hairlines in the list, cards in the grid. */
+.settings-tools-tools { margin: 0; padding: 0; list-style: none; }
+.settings-tools.is-list .settings-tools-tools { border-top: 1px solid var(--main-border); }
+.settings-tools-tool {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  transition: background 0.3s, box-shadow 0.3s, border-color 0.3s;
+}
+.settings-tools.is-list .settings-tools-tool { padding: 11px 12px; border-radius: var(--radius-md); }
+.settings-tools.is-list .settings-tools-tool + .settings-tools-tool { border-top: 1px solid var(--main-border); border-top-left-radius: 0; border-top-right-radius: 0; }
+.settings-tools.is-card .settings-tools-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.settings-tools.is-card .settings-tools-tool {
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-lg);
+  background: var(--main-surface);
+}
+.settings-tools-tool-head { width: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.settings-tools.is-card .settings-tools-tool-head { align-items: center; gap: 2px 8px; }
+.settings-tools-tool-title { min-width: 0; font-size: 13px; font-weight: 500; color: var(--main-fg); }
+.settings-tools.is-card .settings-tools-tool-title { flex: 1; font-weight: 600; }
+/* The name the model uses: secondary, and selected whole with one click so it can be copied. */
+.settings-tools-code {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--main-fg-muted);
+  overflow-wrap: break-word;
+  user-select: all;
+  -webkit-user-select: all;
+  cursor: text;
+}
+.settings-tools.is-card .settings-tools-code { flex-basis: 100%; }
+.settings-tools-desc {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--main-fg-muted);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.settings-tools.is-card .settings-tools-desc { -webkit-line-clamp: 3; }
+.settings-tools-desc.is-open { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.settings-tools-desc.is-empty { font-style: italic; }
+.settings-tools-more {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--main-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-tools-more:hover { text-decoration: underline; }
+.settings-tools-more:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; border-radius: var(--radius-xs); }
+/* /settings/tools/<name> lights its tool up for a moment. */
+.settings-tools-tool.is-highlighted {
+  background: color-mix(in srgb, var(--main-accent) 10%, var(--main-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--main-accent) 55%, transparent);
+}
+.settings-tools.is-card .settings-tools-tool.is-highlighted { border-color: var(--main-accent); }
+
 @media (prefers-reduced-motion: reduce) {
   .settings-switch, .settings-switch::after { transition: none; }
+  .settings-tools, .settings-tools-tool, .settings-tools-head > svg { transition: none; }
 }
 
 @media (max-width: 780px) {
@@ -496,6 +847,5 @@ a.settings-reset { text-decoration: none; }
   .settings-task { flex-direction: column; align-items: stretch; }
   .settings-task-control { align-items: flex-start; }
   .settings-decision-control .settings-select { width: 100%; }
-  .settings-section-bar { flex-direction: column; align-items: stretch; }
-  .settings-section-bar > .sop-panel-toolbar { margin-left: 0; flex-wrap: wrap; }
+  .settings-list-search { flex: 1 1 160px; }
 }

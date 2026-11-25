@@ -55,15 +55,19 @@ interface Props {
   /** When provided (chat composer), shows the Agents popout submenu and recent agents. */
   activeAgentId?: string;
   onSelectAgent?: (agent: AgentRecord | null) => void;
+  /** Shown while nothing is picked, when the server will use something other than the chat model. */
+  defaultModel?: string;
 }
 
-export default function ModelSelect({ value, onChange, disabled, activeAgentId, onSelectAgent }: Props) {
+export default function ModelSelect({ value, onChange, disabled, activeAgentId, onSelectAgent, defaultModel }: Props) {
   const { agents, agentById } = useAgents();
   const [info, setInfo] = useState<ModelInfo | null>(null);
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
   const [recent, setRecent] = useState<RecentEntry[]>(readRecent);
-  const [agentSubmenuPos, setAgentSubmenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [agentSubmenuPos, setAgentSubmenuPos] = useState<
+    { left: number; width: number; maxHeight?: number } & ({ top: number } | { bottom: number })
+  | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const closeSubmenuTimer = useRef<number | undefined>(undefined);
 
@@ -113,7 +117,7 @@ export default function ModelSelect({ value, onChange, disabled, activeAgentId, 
     );
   }
 
-  const selected = value ?? info.current;
+  const selected = value ?? defaultModel ?? info.current;
   const activeAgent = activeAgentId ? agentById.get(activeAgentId) : undefined;
   const showAgents = Boolean(onSelectAgent);
   const agentList = agents ?? [];
@@ -123,10 +127,19 @@ export default function ModelSelect({ value, onChange, disabled, activeAgentId, 
     const rect = triggerEl.getBoundingClientRect();
     const gap = 6;
     const fitsRight = rect.right + gap + SUBMENU_WIDTH <= window.innerWidth - 8;
+    const fitsLeft = rect.left - SUBMENU_WIDTH - gap >= 8;
+    // No room beside the menu (a phone): stack the list above the menu, which opens upward from the composer.
+    const menu = triggerEl.closest(".model-select-menu")?.getBoundingClientRect();
+    if (!fitsRight && !fitsLeft && menu && menu.top - gap - 8 >= 120) {
+      const width = Math.min(window.innerWidth - 16, Math.max(SUBMENU_WIDTH, menu.width));
+      const left = Math.max(8, Math.min(menu.left, window.innerWidth - 8 - width));
+      setAgentSubmenuPos({ left, width, bottom: window.innerHeight - menu.top + gap, maxHeight: menu.top - gap - 8 });
+      return;
+    }
     const left = fitsRight ? rect.right + gap : Math.max(8, rect.left - SUBMENU_WIDTH - gap);
     const estHeight = Math.min(320, Math.max(110, (agentList.length + 2) * 38));
     const top = Math.max(8, Math.min(rect.top - 4, window.innerHeight - estHeight - 8));
-    setAgentSubmenuPos({ top, left });
+    setAgentSubmenuPos({ top, left, width: SUBMENU_WIDTH });
   }
 
   function scheduleCloseSubmenu() {
@@ -303,7 +316,12 @@ export default function ModelSelect({ value, onChange, disabled, activeAgentId, 
           className="model-select-submenu"
           role="menu"
           aria-label="Agents"
-          style={{ top: agentSubmenuPos.top, left: agentSubmenuPos.left, width: SUBMENU_WIDTH }}
+          style={{
+            ...("top" in agentSubmenuPos ? { top: agentSubmenuPos.top } : { bottom: agentSubmenuPos.bottom }),
+            left: agentSubmenuPos.left,
+            width: agentSubmenuPos.width,
+            maxHeight: agentSubmenuPos.maxHeight,
+          }}
           onMouseEnter={cancelCloseSubmenu}
           onMouseLeave={scheduleCloseSubmenu}
         >

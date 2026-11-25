@@ -327,6 +327,39 @@
   flex-direction: column;
 }
 
+/* The messages' column; it also holds a blank new chat's greeting (App.tsx). */
+.chat-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* A blank new chat's greeting, centred where the messages will be. When the first message goes in
+   it floats up and fades out (App.tsx removes it after 600ms). */
+.chat-blank-hero {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 12vh;
+  pointer-events: none;
+}
+.chat-blank-hero > .chat-hero { pointer-events: auto; }
+.chat-blank-hero.is-leaving {
+  animation: chat-blank-hero-leave 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.chat-blank-hero.is-leaving > .chat-hero { pointer-events: none; }
+@keyframes chat-blank-hero-leave {
+  to { opacity: 0; transform: translateY(-48px) scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-blank-hero.is-leaving { animation: none; opacity: 0; }
+}
+
 .message-list {
   flex: 1;
   overflow-y: auto;
@@ -1314,6 +1347,307 @@ svg.link-chip-icon {
 }
 
 /* Dictation: quiet until it is listening, then a pulsing ring so it's obvious the mic is live. */
+/* ── Attachments ─────────────────────────────────────────────────────────── */
+
+/* The composer's "+" menu (AttachMenu), right of the model and agent picker. */
+.attach-menu { position: relative; display: inline-flex; }
+.attach-menu-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--main-border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.attach-menu-btn:hover:not(:disabled),
+.attach-menu-btn.is-open { background: var(--main-surface-alt); color: var(--main-fg); }
+.attach-menu-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.attach-menu-btn:disabled { opacity: 0.4; cursor: default; }
+/*
+ * The composer's + menu and its SOP/Tool lists share the sidebar's menu look (.sidebar-dropdown in
+ * shell.css): the same surface, border, radius, shadow, 36px rows at 14px, and one highlight that
+ * follows the pointer and the keyboard.
+ */
+.attach-menu-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 208px;
+  box-sizing: border-box;
+  padding: 5px;
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-2xl);
+  background: var(--sidebar-menu-bg);
+  box-shadow: var(--sidebar-menu-shadow);
+  color: var(--sidebar-menu-fg);
+  transform-origin: bottom left;
+  animation: attach-menu-in 0.12s ease-out;
+}
+@keyframes attach-menu-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .attach-menu-pop { animation: none; } }
+.attach-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-menu-fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 450;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.attach-menu-item > svg { flex-shrink: 0; width: 15px; height: 15px; stroke-width: 1.8; }
+.attach-menu-item > svg.attach-menu-item-chevron { width: 14px; height: 14px; }
+/* The pointer moves focus here too, so the focused item is the one highlight. */
+.attach-menu-item:focus,
+.attach-menu-item--popout.is-open { background: var(--sidebar-menu-hover); outline: none; }
+.attach-menu-item:focus-visible { outline: 2px solid var(--sidebar-menu-focus); outline-offset: -2px; }
+.attach-menu-item-text { display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }
+.attach-menu-item-hint { font-size: 12px; color: var(--main-fg-muted); }
+/* Text for screen readers only (the menu's item descriptions). */
+.attach-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* The ⓘ on an SOP or tool in the lists: opens its page in Settings or SOPs. */
+.attach-picker-option .attach-picker-label { flex: 1; min-width: 0; text-align: left; }
+.attach-picker-info {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--main-fg-faint);
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s, background 0.1s;
+}
+.attach-picker-option.is-active .attach-picker-info,
+.attach-picker-info:focus-visible { opacity: 1; }
+.attach-picker-info:hover { color: var(--main-fg); background: var(--main-surface-alt); }
+.attach-picker-info:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.attach-picker-picked { flex-shrink: 0; font-size: 12px; color: var(--main-fg-faint); }
+/* "Use" over the SOP and Tool items. */
+.attach-menu-section {
+  position: relative;
+  margin-top: 9px;
+  padding: 8px 8px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--main-fg-muted);
+}
+/* The separator above "Use", drawn like the sidebar menu's. */
+.attach-menu-section::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 6px;
+  right: 6px;
+  height: 1px;
+  background: var(--sidebar-menu-border);
+}
+
+/* Menu items that open a list beside the menu. */
+.attach-menu-item--popout .attach-menu-item-text { flex: 1; }
+.attach-menu-item-chevron { margin-left: auto; opacity: 0.7; }
+/* The list itself: fixed, so the composer's box doesn't clip it. */
+.attach-popout {
+  position: fixed;
+  z-index: 35;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-2xl);
+  background: var(--sidebar-menu-bg);
+  box-shadow: var(--sidebar-menu-shadow);
+  color: var(--sidebar-menu-fg);
+  animation: attach-popout-in 0.12s ease-out;
+}
+@keyframes attach-popout-in { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .attach-popout { animation: none; } }
+.attach-picker { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+/* The search sits in the list like a first row, with the sidebar menu's separator under it. */
+.attach-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 5px 0;
+  padding: 0 8px;
+  min-height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--sidebar-menu-hover);
+  color: var(--main-fg-faint);
+}
+.attach-picker-search input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--sidebar-menu-fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.attach-picker-search input::placeholder { color: var(--main-fg-faint); }
+.attach-picker-list { list-style: none; margin: 0; padding: 5px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.attach-picker-section {
+  padding: 10px 8px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--main-fg-muted);
+}
+.attach-picker-section:first-child { padding-top: 4px; }
+.attach-picker-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px 0 8px;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  color: var(--sidebar-menu-fg);
+  cursor: pointer;
+}
+.attach-picker-option.is-active { background: var(--sidebar-menu-hover); }
+.attach-picker-option.is-picked { cursor: default; opacity: 0.55; }
+.attach-picker-label { font-size: 13px; font-weight: 450; color: var(--sidebar-menu-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A tool's code name, after its title. */
+.attach-picker-sub {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 12px;
+  color: var(--main-fg-faint);
+}
+.attach-picker-label.is-code,
+.attachment-file-name.is-code { font-family: 'Fira Code', 'Menlo', monospace; font-size: 12px; }
+.attach-picker-detail {
+  font-size: 12px;
+  color: var(--main-fg-muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.attach-picker-empty { margin: 0; padding: 16px 14px; font-size: 13px; color: var(--main-fg-muted); }
+
+/* Dropping files onto the composer. */
+.input-box.is-dropping { border-color: var(--main-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--main-accent) 18%, transparent); }
+
+/* Files on a message or in the composer (AttachmentChips). */
+.attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.attachment-chips--message { justify-content: flex-end; margin-bottom: 6px; }
+.attachment-chip { position: relative; max-width: 100%; }
+.attachment-open { display: block; color: inherit; text-decoration: none; border-radius: var(--radius-sm); }
+.attachment-open:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; }
+.attachment-thumb {
+  position: relative;
+  display: block;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--main-border);
+  background: var(--main-surface);
+}
+.attachment-chips--message .attachment-thumb { width: 120px; height: 90px; }
+.attachment-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attachment-thumb-busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--main-bg) 60%, transparent);
+  color: var(--main-fg);
+}
+.attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 6px 10px 6px 8px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-sm);
+  background: var(--main-surface);
+}
+.attachment-file-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  background: var(--main-surface-alt);
+  color: var(--main-fg-muted);
+}
+.attachment-file-text { display: flex; flex-direction: column; min-width: 0; }
+.attachment-file-name { font-size: 13px; color: var(--main-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-file-detail { font-size: 12px; color: var(--main-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chip.is-error .attachment-file { border-color: color-mix(in srgb, var(--color-danger) 45%, var(--main-border)); }
+.attachment-chip.is-error .attachment-file-icon,
+.attachment-chip.is-error .attachment-file-detail { color: var(--color-danger); }
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--main-border);
+  border-radius: 50%;
+  background: var(--main-bg);
+  color: var(--main-fg-muted);
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+}
+.attachment-remove:hover { color: var(--main-fg); background: var(--main-surface); }
+.attachment-remove:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.attachment-chips--composer { padding: 2px 2px 4px; }
+
 .mic-btn {
   width: 32px;
   height: 32px;
@@ -1741,14 +2075,123 @@ button.timeline-step-head:hover,
   text-align: center;
 }
 
-.chat-hero-mark {
-  width: 48px;
-  height: 48px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* Beats .ai-empty-icon (authoring.css loads after this file): the chat hero's orb is a size up. */
+.chat-hero .chat-hero-mark {
+  width: 100px;
+  height: 100px;
   margin-bottom: 18px;
-  border-radius: var(--radius-2xl);
+}
+
+/*
+ * The AI mark as light inside a drop of glass (components/chat/HeroMark.tsx), used above the empty-chat greeting and in
+ * the authoring empty state. The size comes from the caller's class. The canvas bleeds past the orb on every side
+ * (--hero-mark-bleed) so the glow, the droplet's sway and the ring of dots have room; that never affects layout. The
+ * ::before/::after gradients and the SVG spark are the fallback (a slightly irregular drop, --hero-mark-shape, of dark
+ * glass, pale and frosted on a light theme, with soft clouds of accent light pooling low, a window's highlight at the
+ * upper left, a glow behind the spark and a faint spectral rim):
+ * they show until the canvas draws its first frame (then fade as it fades in, via [data-live]), and stay when WebGL is
+ * unavailable.
+ */
+.hero-mark {
+  --hero-mark-ink: var(--main-bg);
+  --hero-mark-ink-shadow: color-mix(in srgb, var(--main-accent-alt) 60%, transparent);
+  --hero-mark-bleed: 28%;
+  --hero-mark-shape: 52% 48% 47% 53% / 49% 53% 47% 51%;
+  position: relative;
+  isolation: isolate;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+:root[data-theme="dark"] .hero-mark {
+  --hero-mark-ink: var(--main-fg);
+  --hero-mark-ink-shadow: color-mix(in srgb, var(--main-bg) 75%, transparent);
+}
+.hero-mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--hero-mark-shape);
+  /*
+   * Light: pale frosted glass tinted with the accent; soft clouds of the accent and the AI accent pooling low and
+   * drifting up one side; a window's white highlight at the upper left; an accent glow behind the (white) spark.
+   */
+  background:
+    radial-gradient(ellipse 9% 13% at 29% 27%, color-mix(in srgb, var(--main-bg) 90%, transparent), transparent 100%),
+    radial-gradient(circle at 46% 46%, color-mix(in srgb, var(--main-accent) 55%, transparent), transparent 30%),
+    radial-gradient(ellipse 44% 26% at 56% 80%, color-mix(in srgb, var(--main-accent) 55%, transparent), transparent 100%),
+    radial-gradient(ellipse 30% 24% at 30% 64%, color-mix(in srgb, var(--main-ai-accent) 40%, transparent), transparent 100%),
+    radial-gradient(ellipse 22% 30% at 76% 38%, color-mix(in srgb, var(--main-ai-accent) 28%, transparent), transparent 100%),
+    radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--main-accent) 8%, var(--main-bg)), color-mix(in srgb, var(--main-accent-alt) 26%, var(--main-bg)));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--main-accent-alt) 22%, transparent),
+    0 0 16px 2px color-mix(in srgb, var(--main-accent) 18%, transparent);
+  transition: opacity 0.6s ease-out;
+  pointer-events: none;
+}
+/* Dark: clear dark glass; clouds of accent light pooling low with a pale hot core; a window's highlight; a white glow round the spark. */
+:root[data-theme="dark"] .hero-mark::before {
+  background:
+    radial-gradient(ellipse 9% 13% at 29% 27%, color-mix(in srgb, var(--main-fg) 55%, transparent), transparent 100%),
+    radial-gradient(circle at 46% 46%, color-mix(in srgb, var(--main-fg) 45%, transparent), transparent 26%),
+    radial-gradient(ellipse 22% 12% at 52% 82%, color-mix(in srgb, var(--main-fg) 50%, transparent), transparent 100%),
+    radial-gradient(ellipse 50% 32% at 56% 80%, color-mix(in srgb, var(--main-accent) 90%, transparent), transparent 100%),
+    radial-gradient(ellipse 32% 26% at 30% 64%, color-mix(in srgb, var(--main-ai-accent) 75%, transparent), transparent 100%),
+    radial-gradient(ellipse 24% 32% at 76% 38%, color-mix(in srgb, var(--main-ai-accent) 50%, transparent), transparent 100%),
+    radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--main-accent) 6%, var(--main-bg)), color-mix(in srgb, var(--main-accent) 12%, var(--main-bg)));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--main-accent) 26%, transparent),
+    0 0 18px 2px color-mix(in srgb, var(--main-accent) 16%, transparent);
+}
+/* Fallback refracted edge: a thin spectral rim, spun from the accent presets (a spectrum of tokens). */
+.hero-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--hero-mark-shape);
+  background: conic-gradient(from 210deg, var(--accent-pink), var(--accent-orange), var(--accent-green), var(--accent-teal), var(--accent-blue), var(--accent-purple), var(--accent-pink));
+  -webkit-mask-image: radial-gradient(circle closest-side, transparent 78%, var(--main-fg) 100%);
+  mask-image: radial-gradient(circle closest-side, transparent 78%, var(--main-fg) 100%);
+  mix-blend-mode: screen;
+  opacity: 0.35;
+  transition: opacity 0.6s ease-out;
+  pointer-events: none;
+}
+.hero-mark[data-live]::before,
+.hero-mark[data-live]::after { opacity: 0; }
+.hero-mark-canvas {
+  position: absolute;
+  top: calc(-1 * var(--hero-mark-bleed));
+  left: calc(-1 * var(--hero-mark-bleed));
+  z-index: 1;
+  display: block;
+  width: calc(100% + 2 * var(--hero-mark-bleed));
+  height: calc(100% + 2 * var(--hero-mark-bleed));
+  pointer-events: none;
+  animation: hero-mark-in 0.6s ease-out;
+}
+/* The SVG spark is part of the fallback: once the canvas draws, the shader draws the spark inside the glass. */
+.hero-mark-icon {
+  position: relative;
+  z-index: 2;
+  /* Scales with the orb, matching the shader's spark (SPARK_SHARE in HeroMark.tsx). */
+  width: 45%;
+  height: 45%;
+  filter: drop-shadow(0 1px 1.5px var(--hero-mark-ink-shadow));
+  transition: opacity 0.6s ease-out;
+}
+.hero-mark[data-live] .hero-mark-icon { opacity: 0; }
+/* CSS fill beats the SVG's gradient fill attribute: a solid ink that reads on every accent. */
+.hero-mark-icon path { fill: var(--hero-mark-ink); }
+@keyframes hero-mark-in {
+  from { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-mark-canvas { animation: none; }
+  .hero-mark::before,
+  .hero-mark::after,
+  .hero-mark-icon { transition: none; }
 }
 
 .chat-hero-title {
@@ -1759,6 +2202,29 @@ button.timeline-step-head:hover,
   line-height: 1.2;
   letter-spacing: -0.025em;
   color: var(--main-fg);
+}
+
+/* In an agent's empty chat: the agent's picture in the orb's place (same 78px), with a soft accent glow. */
+.chat-hero-agent {
+  display: inline-flex;
+  margin-bottom: 14px;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--main-accent) 14%, transparent),
+    0 12px 32px color-mix(in srgb, var(--main-accent) 24%, transparent);
+  animation: chat-hero-agent-in 0.35s ease-out;
+}
+@keyframes chat-hero-agent-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-hero-agent { animation: none; }
+}
+.chat-hero-sub {
+  margin: 6px 0 0;
+  font-size: 14px;
+  color: var(--main-fg-muted);
 }
 
 .input-bar-wrap--hero {
@@ -1864,6 +2330,17 @@ button.timeline-step-head:hover,
 
 @media (max-width: 720px) {
   .prompt-cards { grid-template-columns: 1fr; }
+  /* One row that scrolls sideways instead of wrapping into two uneven lines. */
+  .chat-examples-head { justify-content: flex-start; }
+  .prompt-tabs {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .prompt-tabs::-webkit-scrollbar { display: none; }
+  .prompt-tabs .sop-diff-tab { flex-shrink: 0; white-space: nowrap; }
 }
 
 /* ── Agent prompt widget (ask_user questions and tool approvals) ─────────── */
@@ -2359,6 +2836,11 @@ button.timeline-step-head:hover,
   line-height: 1.55;
 }
 
+/* The inline editor is the chat composer's mention editor; its tag suggestions open below it. */
+.user-edit-field { position: relative; }
+.user-edit-field .mention-popover { top: calc(100% + 6px); bottom: auto; z-index: 20; }
+.user-edit-input.chat-input--rich { min-height: calc(1.55em + 18px); }
+
 .user-edit-input:focus {
   outline: none;
   border-color: var(--main-accent);
@@ -2483,3 +2965,82 @@ button.timeline-step-head:hover,
 .md-body .chart-block-table table { margin: 0; width: 100%; }
 .chart-block-table td:not(:first-child),
 .chart-block-table th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Phone width (MOBILE_BREAKPOINT in utils/viewport.ts) ────────────────────
+   16px gutters for the header, messages and composer; the name above each message instead of
+   beside it, so a reply uses the full width; tables and code scroll inside their own frame. */
+@media (max-width: 767px) {
+  .chat-header {
+    padding: 6px 10px 6px 16px;
+    gap: 4px;
+    min-height: 52px;
+    box-sizing: border-box;
+  }
+  .chat-header-title { min-width: 0; font-size: 14px; color: var(--main-fg); }
+  .chat-header-title > span { min-width: 0; }
+  .chat-header-db-btn { width: 36px; height: 36px; }
+  .stored-results-popover { top: calc(52px + env(safe-area-inset-top)); left: 8px; right: 8px; }
+
+  .message-list { padding: 20px 16px 24px; }
+  .message-row,
+  .message-row.user {
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 20px;
+    /* Holds the visually hidden "You" label below. Without a positioned ancestor inside the
+       message list, each absolutely positioned label lands against the page, outside the list's
+       scrolling, and makes the whole page scroll past the composer. */
+    position: relative;
+  }
+  .message-row.user { align-items: flex-end; }
+  .message-role { min-width: 0; padding-top: 0; font-size: 12px; }
+  /* The bubble says who wrote it; the "You" label stays for screen readers. */
+  .message-role.user {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .message-row > .message-body { flex: none; width: 100%; }
+  .message-row > .message-body.user { width: auto; max-width: 85%; }
+  .message-row > .message-body.user.editing { width: 100%; max-width: 100%; }
+  .message-list-content > .continue-divider,
+  .approval-outcome { padding-left: 0; }
+  .md-body h1 { font-size: 24px; }
+  .md-body h2 { font-size: 20px; }
+  .md-body pre { padding: 12px; }
+  .md-body a.link-chip { max-width: 100%; overflow-wrap: anywhere; }
+
+  .input-bar-wrap { padding: 8px 16px calc(10px + env(safe-area-inset-bottom)); }
+  .input-box { padding: 10px 8px 8px 12px; border-radius: 16px; }
+  .chat-input { min-height: 1.5em; }
+  .input-box-actions { gap: 6px; }
+  .input-box-actions-left { flex: 1; min-width: 0; }
+  .input-box-actions-left .model-select-btn { max-width: 100%; }
+  .attach-menu-btn,
+  .mic-btn { width: 36px; height: 36px; }
+  .send-btn,
+  .stop-btn { width: 36px; height: 36px; }
+
+  /* Home: the greeting and composer fill the first screen, the composer low enough to reach, and
+     the suggestions start below the fold. The greeting's minimum height is the screen less the
+     header (52px), this padding, the gap, the composer (~120px) and a little room under it. */
+  .chat-home-inner {
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+    gap: 32px;
+  }
+  .chat-home .chat-hero {
+    min-height: calc(100dvh - 248px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    justify-content: center;
+  }
+  .chat-home .chat-examples { margin-top: 40px; }
+  .chat-hero .chat-hero-mark { width: 92px; height: 92px; margin-bottom: 16px; }
+  .chat-hero-title { font-size: 26px; }
+  .input-bar-wrap--hero { padding: 0; }
+  .input-bar-wrap--hero .input-box { padding: 12px 8px 8px 14px; }
+  .input-bar-wrap--hero .chat-input { min-height: calc(1.5em * 2); }
+  .prompt-card { padding: 12px 32px 12px 12px; }
+  .prompt-card-text { min-height: 0; -webkit-line-clamp: 2; line-clamp: 2; }
+}

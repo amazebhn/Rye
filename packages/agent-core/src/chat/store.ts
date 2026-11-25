@@ -366,6 +366,59 @@ export class ChatStore {
     (this.embedTimer as { unref?: () => void }).unref?.();
   }
 
+  // ── Attachments ────────────────────────────────────────────────────────────
+
+  /** Searchable text for an attachment (its name, an image's description, the start of its text); set by the server. */
+  attachmentText: ((id: string) => string) | null = null;
+
+  /** What search finds a message by: what was said, plus its attachments' names and descriptions. */
+  private searchableText(message: unknown): { role: "user" | "assistant"; text: string } | null {
+    const said = messageText(message);
+    const refs = (message as { attachments?: unknown })?.attachments;
+    if (!Array.isArray(refs) || refs.length === 0) return said;
+    const role = (message as { role?: unknown }).role;
+    if (role !== "user" && role !== "assistant") return said;
+    const extra = refs
+      .map((r) => {
+        const ref = r as { id?: unknown; name?: unknown };
+        const fromStore = typeof ref.id === "string" ? this.attachmentText?.(ref.id) : "";
+        return fromStore || (typeof ref.name === "string" ? ref.name : "");
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (!extra) return said;
+    return { role, text: said ? `${said.text}\n\n${extra}` : extra };
+  }
+
+  /** Re-index the messages that carry attachment `id` (its description arrived after they were saved). */
+  refreshAttachmentText(id: string): number {
+    const rows = this.db.query("SELECT id, text, data FROM messages WHERE instr(data, ?) > 0").all(id) as Array<{ id: number; text: string; data: string }>;
+    let changed = 0;
+    const words = new Set<string>();
+    for (const row of rows) {
+      const said = this.searchableText(JSON.parse(row.data) as unknown);
+      if (!said || said.text === row.text) continue;
+      this.db.query("UPDATE messages SET role = ?, text = ? WHERE id = ?").run(said.role, said.text, row.id);
+      for (const word of wordsOf(said.text)) words.add(word);
+      changed++;
+    }
+    if (changed > 0) {
+      this.rememberWords(words);
+      this.vectors = null;
+      this.scheduleEmbedding();
+    }
+    return changed;
+  }
+
+  /** Every attachment id some stored message refers to. */
+  referencedAttachmentIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const row of this.db.query("SELECT data FROM messages WHERE instr(data, 'att_') > 0").all() as Array<{ data: string }>) {
+      for (const id of row.data.match(/\batt_[a-z0-9]{16}\b/g) ?? []) ids.add(id);
+    }
+    return ids;
+  }
+
   /**
    * Switch message vectors to `model`. The vectors of the model being left are
    * kept in `message_vectors_prev` (one previous model at a time); when `model`
@@ -559,7 +612,7 @@ export class ChatStore {
       const data = JSON.stringify(message ?? null);
       const hash = Bun.hash(data).toString(36);
       if (stored.get(idx) === hash) return;
-      const said = messageText(message);
+      const said = this.searchableText(message);
       put.run(chat.id, idx, said?.role ?? "", said?.text ?? "", hash, data);
       if (said) for (const word of wordsOf(said.text)) seenWords.add(word);
       changed = true;

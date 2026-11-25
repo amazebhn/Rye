@@ -79,6 +79,29 @@ export async function pickAutoRoutedAgent(opts: {
 }
 
 /**
+ * The agent to hand to because someone tagged them: one tagged in the last reply first,
+ * then the next agent the user tagged who hasn't spoken yet (removed from `queued`).
+ * An agent tagging itself doesn't count. Null when nobody was tagged.
+ */
+export function pickTaggedAgent(
+  taggedInReply: AgentDefinition[],
+  queued: AgentDefinition[],
+  lastSpeakerId: string | null,
+): { agent: AgentDefinition; by: "reply" | "user" } | null {
+  const fromReply = taggedInReply.find((a) => a.id !== lastSpeakerId);
+  if (fromReply) {
+    const i = queued.findIndex((a) => a.id === fromReply.id);
+    if (i >= 0) queued.splice(i, 1);
+    return { agent: fromReply, by: "reply" };
+  }
+  while (queued.length > 0) {
+    const next = queued.shift()!;
+    if (next.id !== lastSpeakerId) return { agent: next, by: "user" };
+  }
+  return null;
+}
+
+/**
  * Decide whether another agent should chime in after `lastSpeaker` responded.
  * Returns null when the conversation should pause and wait for the user.
  */

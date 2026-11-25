@@ -563,12 +563,10 @@
 .result-data-copy-cell:hover { background: var(--main-surface-alt); color: var(--main-fg); }
 .result-data-copy-cell:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
 
-/* Narrow windows: the controls drop to their own line under the title instead of squeezing it. */
+/* Narrow windows: the search takes the controls row's full width. */
 @media (max-width: 900px) {
-  .table-fullscreen-header { flex-wrap: wrap; }
-  .table-fullscreen-title { flex: 1 1 0; }
-  .table-fullscreen-tools { order: 3; flex-basis: 100%; }
-  .result-data-toolbar.result-data-toolbar--header { flex-wrap: wrap; }
+  .result-data-toolbar--header .result-data-search { flex: 1 1 100%; }
+  .result-data-toolbar--header .result-data-search input { width: 100%; }
 }
 
 @media (max-width: 840px) {
@@ -655,37 +653,95 @@
   color: var(--main-fg);
 }
 
+/*
+ * Two rows: the title (often the query behind the table) with the viewer's actions, then the table's
+ * own controls. The title never shares a row with the controls, so a long one can't run into them.
+ */
 .table-fullscreen-header {
-  min-height: 56px;
   box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px 10px 18px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 10px 18px;
   border-bottom: 1px solid var(--main-border);
   background: var(--main-bg);
 }
+.table-fullscreen-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
 
 .table-fullscreen-title {
-  flex: 0 1 auto;
-  min-width: 80px;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  overflow: hidden;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
   color: var(--main-fg);
   font-size: 14px;
   font-weight: 600;
 }
+.table-fullscreen-title-line { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.table-fullscreen-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-fullscreen-title.is-query .table-fullscreen-title-text {
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 13px;
+  font-weight: 500;
+}
+.table-fullscreen-title-toggle {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--main-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.table-fullscreen-title-toggle:hover { text-decoration: underline; }
+.table-fullscreen-title-toggle:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 2px; border-radius: var(--radius-xs); }
+/* The whole title or query, opened under the line. */
+.table-fullscreen-title-full {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 6px 8px 12px;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-sm);
+  background: var(--main-surface);
+}
+.table-fullscreen-title-full pre {
+  flex: 1;
+  min-width: 0;
+  max-height: 28vh;
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: var(--main-fg);
+}
 
-/* The table's controls, drawn into the header by ResultDataGrid; takes whatever room the title leaves. */
+/* The table's controls, drawn into the header's second row by ResultDataGrid. */
 .table-fullscreen-tools {
-  flex: 1 1 auto;
   min-width: 0;
   display: flex;
 }
-.table-fullscreen-tools:empty { min-height: 1px; }
+.table-fullscreen-tools:empty { display: none; }
 
 /* In the header the toolbar is just a row of controls: no bar of its own. */
 .result-data-toolbar.result-data-toolbar--header {
@@ -696,11 +752,12 @@
   border: 0;
   background: transparent;
   gap: 8px;
+  flex-wrap: wrap;
 }
-/* Row count sits beside the title; everything after it is pushed to the right, next to copy/download/close. */
+/* Search first, then grouping and the rest; the row count sits at the far right. */
 .result-data-toolbar--header .result-data-summary {
-  order: 0;
-  margin: 0 auto 0 4px;
+  order: 9;
+  margin: 0 0 0 auto;
   color: var(--main-fg-faint);
 }
 .result-data-toolbar--header .result-data-chart-toggle {
@@ -720,17 +777,13 @@
 .result-data-toolbar--header .result-data-toggle { padding: 0 10px; font-size: 13px; }
 .result-data-toolbar--header .result-data-sort-clear { height: 32px; font-size: 13px; }
 .table-fullscreen-header .table-frame-actions--fullscreen {
+  flex-shrink: 0;
   margin-left: 6px;
   padding-left: 8px;
   border-left: 1px solid var(--main-border);
   border-radius: 0;
 }
-
-.table-fullscreen-title > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.table-fullscreen-top .table-fullscreen-close { flex-shrink: 0; }
 
 .table-fullscreen-hint {
   flex-shrink: 0;

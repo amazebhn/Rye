@@ -1,6 +1,7 @@
 import React from "react";
 import { ArrowUpRight, FileText } from "lucide-react";
 import AiMark from "../shared/AiMark";
+import HeroMark from "../chat/HeroMark";
 
 interface Props {
   title: string;
@@ -64,7 +65,7 @@ export function SuggestionChips({
 export default function AiEmptyState({ title, suggestions, onPick }: Props) {
   return (
     <div className="ai-empty">
-      <span className="ai-empty-icon" aria-hidden="true"><AiMark size={22} /></span>
+      <HeroMark className="ai-empty-icon" iconSize={22} />
       <h4 className="ai-empty-title">{title}</h4>
       <div className="ai-empty-label">Start from an example</div>
       <div className="ai-empty-suggestions">

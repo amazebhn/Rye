@@ -17,6 +17,9 @@ export interface CreateResourceModalProps {
   pickerAiDescription: string;
   pickerInstallDescription?: string;
   onInstall?: () => void;
+  /** Adds "Import a file" to the picker; Next calls onImport (which opens the file chooser). */
+  pickerImportDescription?: string;
+  onImport?: () => void;
   submitLabel: string;
   submittingLabel?: string;
   canSubmit: boolean;
@@ -45,6 +48,8 @@ export default function CreateResourceModal({
   pickerAiDescription,
   pickerInstallDescription,
   onInstall,
+  pickerImportDescription,
+  onImport,
   submitLabel,
   submittingLabel = "Creating…",
   canSubmit,
@@ -62,6 +67,7 @@ export default function CreateResourceModal({
 
   function next(picked: CreateOrInstallMode) {
     if (picked === "install") onInstall?.();
+    else if (picked === "import") onImport?.();
     else setMode(picked);
   }
 
@@ -113,6 +119,7 @@ export default function CreateResourceModal({
           writeDescription={pickerWriteDescription}
           aiDescription={pickerAiDescription}
           installDescription={pickerInstallDescription}
+          importDescription={onImport ? pickerImportDescription : undefined}
           value={choice}
           onChange={setChoice}
           onContinue={next}

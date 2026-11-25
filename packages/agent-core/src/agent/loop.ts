@@ -57,6 +57,7 @@ import { meaningfulTokens } from "../knowledge/store.js";
 import type { KnowledgeSearchHit, KnowledgeStore } from "../knowledge/store.js";
 import { attachTurnContext, buildTurnContext, previousUserText, shownChunkKeys, stripTurnContext } from "./turn-context.js";
 import type { AgentDefinition } from "../agents/store.js";
+import { readUserProfile, userPromptLine } from "../profile/store.js";
 import { UsageStore } from "../usage/store.js";
 import { estimateCost } from "../usage/pricing.js";
 import { isMcpTool, isReadOnlyTool, parseToolName } from "../mcp/client.js";
@@ -235,6 +236,11 @@ import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { DATA_DIR } from "../config.js";
 import { isSessionDeleted } from "../session/lifecycle.js";
+import { mightBeWrittenToolCall, parseWrittenToolCalls, toToolCalls } from "./text-tool-calls.js";
+import { attachmentsForModel, mentionsAttachments, withoutImages } from "./attachments.js";
+import type { Attachment, AttachmentStore } from "../chat/attachments.js";
+import { READ_ATTACHMENT_TOOL } from "../tools/attachments.js";
+import { referencesForModel, type ContextRef } from "./references.js";
 
 const SESSIONS_DIR = join(DATA_DIR, "sessions");
 
@@ -317,7 +323,8 @@ function saveSession(sessionId: string, messages: Message[]): void {
   try {
     if (isSessionDeleted(sessionId)) return;
     ensureSessionsDir();
-    writeFileSync(sessionPath(sessionId), JSON.stringify(messages), "utf8");
+    // Images are sent on the turn they belong to only; the saved history keeps their text reference.
+    writeFileSync(sessionPath(sessionId), JSON.stringify(withoutImages(messages)), "utf8");
   } catch (err) {
     log("warn", `failed to persist session ${sessionId}`, err);
   }
@@ -516,7 +523,10 @@ async function summarizeMessages(
   // Render the messages to plain text for the summarizer
   const transcript = messages
     .map((m) => {
-      if (m.role === "user") return `USER: ${typeof m.content === "string" ? stripTurnContext(m.content) : m.content}`;
+      if (m.role === "user") {
+        const said = typeof m.content === "string" ? m.content : m.content.map((b) => (b.type === "text" ? b.text : "[image]")).join("\n");
+        return `USER: ${stripTurnContext(said)}`;
+      }
       if (m.role === "assistant") {
         const blocks = (m as AssistantMessage).content ?? [];
         const text = blocks
@@ -649,6 +659,12 @@ export async function* runAgent(
   turnId?: string,
   knowledgeStore?: KnowledgeStore,
   agent?: AgentDefinition | null,
+  /** Agents this one may hand the conversation to by tagging them; set only where hand-offs are on. */
+  teammates?: AgentDefinition[],
+  /** Files the user attached to this message. */
+  attachments?: { store: AttachmentStore; items: Attachment[] },
+  /** SOPs and tools the user pointed this message at. */
+  refs?: ContextRef[],
 ): AsyncGenerator<AgentEvent> {
   const settings = getSettings();
   log("info", `session=${sessionId} message="${userMessage.slice(0, 80)}"`);
@@ -748,6 +764,12 @@ export async function* runAgent(
     for (const g of enabled) enabledGroups.add(g);
   }
   if (leanAgent && agent.tool_groups.includes(CORE_GROUP)) enabledGroups.add(CORE_GROUP);
+  // Files attached now or earlier in the chat can be read again.
+  if (!leanAgent && ((attachments?.items.length ?? 0) > 0 || mentionsAttachments(history))) enabledGroups.add("attachments");
+  // SOPs and tools the user picked for this message. A low-context agent's tool set stays fixed.
+  const referenced = referencesForModel(refs ?? [], { sops: sopStore, toolGroups });
+  if (!leanAgent) for (const g of referenced.groups) if (g !== CORE_GROUP) enabledGroups.add(g);
+  if (refs?.length) log("info", `user referenced ${refs.map((r) => (r.type === "sop" ? `sop ${r.id}` : r.name)).join(", ")}`);
   if (!leanAgent) rememberToolGroups(sessionId, enabledGroups);
   log("info", `tool groups: ${[...(leanAgent ? [] : [CORE_GROUP]), ...enabledGroups].join(", ") || "none"}${leanAgent ? " (low-context agent)" : ""}`);
 
@@ -790,6 +812,20 @@ export async function* runAgent(
     if (pinnedNotes.length > 0) {
       systemPrompt += `\n\n### Referenced Resources for ${agent.name}\n${pinnedNotes.join("\n")}`;
     }
+  }
+  // Who the agent is talking to (set in Settings). Only changes when the user renames themselves.
+  const userLine = userPromptLine(readUserProfile());
+  if (userLine) systemPrompt += `\n\n${userLine}`;
+  // Who can be tagged. Only changes when the user adds, renames or removes an agent, so the prompt stays stable.
+  const others = (teammates ?? []).filter((a) => a.id !== agent?.id);
+  if (others.length > 0) {
+    const roster = others
+      .map((a) => `- @${a.slug} — ${a.name}${a.description.trim() ? `: ${a.description.trim().replace(/\s+/g, " ").slice(0, 160)}` : ""}`)
+      .join("\n");
+    systemPrompt +=
+      `\n\n## Other agents in this chat\n` +
+      `To bring one in, write their tag (e.g. @${others[0].slug}) in your reply, with what you want from them. ` +
+      `They answer right after you. Tag only when they are actually needed, and never tag yourself.\n${roster}`;
   }
   if (optionalGroups.length > 0 && !leanAgent) {
     systemPrompt += `\n\n**More tools:** only some tool groups are loaded. If you need a tool you don't have, call load_tools_tool with its group, then use it on your next step. Groups: ${formatGroupList(toolGroups)}.`;
@@ -861,13 +897,24 @@ export async function* runAgent(
 
   // Append the new user message, with this turn's context after the user's own text.
   if (relevantKnowledge.length > 0) log("info", `attaching ${relevantKnowledge.length} knowledge note(s) to the message`);
+  const attached = attachments
+    ? attachmentsForModel(attachments.items, attachments.store, model.input.includes("image"))
+    : { note: "", images: [] };
+  if (attachments?.items.length) {
+    log("info", `${attachments.items.length} attachment(s); ${attached.images.length} image(s) sent${model.input.includes("image") ? "" : " (model can't see images)"}`);
+  }
   const turnContext = buildTurnContext({
-    notes: mcpConfigDecision ? [`**MCP configuration result:** ${mcpConfigDecision}\nReport this result clearly to the user.`] : [],
+    notes: [
+      ...(mcpConfigDecision ? [`**MCP configuration result:** ${mcpConfigDecision}\nReport this result clearly to the user.`] : []),
+      ...(attached.note ? [attached.note] : []),
+      ...(referenced.note ? [referenced.note] : []),
+    ],
     knowledge: knowledgeStore ? knowledgeStore.formatHitsForPrompt(relevantKnowledge) : "",
   });
+  const userText = attachTurnContext(userMessage, turnContext);
   const newUserMessage: TaggedMessage = {
     role: "user",
-    content: attachTurnContext(userMessage, turnContext),
+    content: attached.images.length > 0 ? [{ type: "text", text: userText }, ...attached.images] : userText,
     timestamp: Date.now(),
     ...(turnId ? { turnId } : {}),
   };
@@ -957,6 +1004,7 @@ export async function* runAgent(
     let s: AssistantMessageEventStream | undefined;
     let assistantMessage: AssistantMessage | undefined;
     let authRetried = false;
+    let heldTextThisRound: string | null = null;
     // Old tool output is cut in the copy sent to the model; context.messages (persisted) keeps it whole.
     const requestContext: Context = { ...context, messages: shrinkOldToolResults(context.messages) };
 
@@ -974,6 +1022,9 @@ export async function* runAgent(
       let emittedTokens = false;
       let authErr: string | null = null;
       let harnessToolsRunning = 0;
+      // Text that may be a tool call written out as JSON is held back until the reply ends (see text-tool-calls.ts).
+      let heldText = "";
+      let holding = true;
 
       try {
         for await (const event of s) {
@@ -981,6 +1032,12 @@ export async function* runAgent(
           if (isHarnessToolEvent(event as { type: string })) {
             const tool = event as unknown as HarnessToolEvent;
             emittedTokens = true;
+            // A real tool ran, so what came before it was prose: show it in its place.
+            if (holding) {
+              holding = false;
+              if (heldText) yield { type: "token", content: heldText };
+              heldText = "";
+            }
             if (tool.type === "harness_tool_start") {
               harnessToolsRunning++;
               yield { type: "tool_start", name: tool.name, args: tool.args };
@@ -996,6 +1053,14 @@ export async function* runAgent(
           const ev = event as AssistantMessageEvent;
           if (ev.type === "text_delta") {
             emittedTokens = true;
+            if (holding) {
+              heldText += ev.delta;
+              if (mightBeWrittenToolCall(heldText)) continue;
+              holding = false;
+              yield { type: "token", content: heldText };
+              heldText = "";
+              continue;
+            }
             yield { type: "token", content: ev.delta };
           } else if (ev.type === "error") {
             if (cancelled()) {
@@ -1043,6 +1108,8 @@ export async function* runAgent(
         continue streamAttempt;
       }
 
+      // Still holding at the end: the whole reply was a candidate. Decided once the full message is in, below.
+      heldTextThisRound = holding ? heldText : null;
       break;
     }
 
@@ -1057,6 +1124,23 @@ export async function* runAgent(
       log("error", `s.result() threw: ${msg}`);
       yield { type: "error", message: `LLM result error: ${msg}` };
       return;
+    }
+
+    // A reply that is only a tool call written out as text becomes the real call; any other held text is shown now.
+    if (heldTextThisRound !== null) {
+      const offered = new Set((context.tools ?? []).map((t) => t.name));
+      const hasRealCalls = assistantMessage.content.some((b) => b.type === "toolCall");
+      const written = hasRealCalls ? null : parseWrittenToolCalls(heldTextThisRound, offered);
+      if (written) {
+        log("warn", `model wrote ${written.length} tool call(s) as text (${written.map((c) => c.name).join(", ")}); running them as calls`);
+        assistantMessage = {
+          ...assistantMessage,
+          content: [...assistantMessage.content.filter((b) => b.type !== "text"), ...toToolCalls(written, `textcall_${Date.now().toString(36)}`)],
+          stopReason: "toolUse",
+        };
+      } else if (heldTextThisRound) {
+        yield { type: "token", content: heldTextThisRound };
+      }
     }
 
     // Emit usage stats for this iteration
@@ -1502,11 +1586,16 @@ export async function* runAgent(
         yield draftEv;
       }
 
+      // Looking at an attached image again: a model that can see gets the image itself with the result.
+      const shownImage =
+        block.name === READ_ATTACHMENT_TOOL && attachments && model.input.includes("image")
+          ? attachments.store.image(String((block.arguments as { id?: unknown }).id ?? ""))
+          : null;
       const toolResultMessage: Message = {
         role: "toolResult",
         toolCallId: block.id,
         toolName: block.name,
-        content: [{ type: "text", text: resultText }],
+        content: [{ type: "text", text: resultText }, ...(shownImage ? [{ type: "image" as const, ...shownImage }] : [])],
         isError: false,
         timestamp: Date.now(),
       };

@@ -1,4 +1,5 @@
 import type { PendingPrompt } from "@rye/shared";
+import type { AttachmentRef, ContextRef } from "./attachments";
 
 export interface StarterPrompt {
   title: string;
@@ -35,6 +36,8 @@ export interface RenderMessage {
   kind?: "approval" | "answer" | "continue";
   agentId?: string; // assistant turns answered by a specific custom agent (dedicated chat or @mention)
   meta?: MessageMeta; // assistant turns only
+  attachments?: AttachmentRef[]; // user turns only: files sent with the message (stored on the server by id)
+  references?: ContextRef[]; // user turns only: SOPs and tools the message was pointed at
 }
 
 // Run details for an assistant turn, shown in the message info card.

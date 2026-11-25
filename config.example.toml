@@ -61,6 +61,18 @@ auto_knowledge = true
 knowledge_min_similarity = 0.5
 
 # ---------------------------------------------------------------------------
+# Attachments (the + button in the chat box): images, PDFs and text files.
+# Images go to models that can see on the turn they're attached; a local
+# vision model also writes a short description and tags for later turns and
+# for chat search. PDF text is read with pdftotext (brew install poppler).
+# RYE_VISION_MODEL
+# ---------------------------------------------------------------------------
+[attachments]
+# Blank: the smallest installed Ollama model that can see and write text.
+# "off": no descriptions.
+vision_model = ""
+
+# ---------------------------------------------------------------------------
 # Dictation (the mic button in the chat box)
 # RYE_SPEECH_STT_COMMAND
 # ---------------------------------------------------------------------------

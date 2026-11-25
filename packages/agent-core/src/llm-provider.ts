@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { DATA_DIR, getSettings, type LlmProvider, type Settings } from "./config.js";
 import { getCopilotBearerToken } from "./copilot-auth.js";
 import { CLAUDE_SDK_API, CLAUDE_WEB_TOOLS, claudeAgentSdkApi } from "./harness/claude-sdk.js";
+import { ollamaModelSeesImages } from "./embeddings/models.js";
 
 const OLLAMA_CACHE_MS = 60_000;
 let ollamaCache: { baseUrl: string; models: string[]; at: number } | null = null;
@@ -165,6 +166,8 @@ export async function resolveModel(settings: Settings, id: string): Promise<Reso
     ...SHARED,
     id,
     name: `Ollama / ${id}`,
+    // Ollama says which of its models can see (the "vision" capability); the rest get text only.
+    input: (await ollamaModelSeesImages(settings, id)) ? ["text", "image"] : ["text"],
     provider: "ollama",
     baseUrl: `${settings.ollama.base_url}/v1`,
     contextWindow: settings.ollama.context_window,

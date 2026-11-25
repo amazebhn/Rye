@@ -40,9 +40,11 @@ interface Props {
   onInstall: () => void;
   onClose: () => void;
   animateIn?: boolean;
+  /** Adds "Import a file" to the picker: opens the file chooser for a .md or .json skill. */
+  onImport?: () => void;
 }
 
-export default function NewSkillModal({ onCreated, onInstall, onClose, animateIn }: Props) {
+export default function NewSkillModal({ onCreated, onInstall, onClose, animateIn, onImport }: Props) {
   const { getSkill } = useSkills();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -78,6 +80,8 @@ export default function NewSkillModal({ onCreated, onInstall, onClose, animateIn
       pickerAiDescription="Describe the domain and the agent drafts it for you"
       pickerInstallDescription="Add existing skills from a GitHub repo with the skills CLI"
       onInstall={onInstall}
+      pickerImportDescription="Upload a skill saved as Markdown (.md) or JSON (.json)"
+      onImport={onImport}
       submitLabel="Create Skill"
       canSubmit={title.trim().length > 0}
       submitting={saving}

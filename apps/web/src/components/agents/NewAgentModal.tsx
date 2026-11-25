@@ -244,8 +244,9 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
       onClose={onClose}
       renderWriteForm={() => (
         <div className="modal-form">
-          <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-            <div ref={avatarPopoverRef} style={{ position: "relative", paddingTop: 18 }}>
+          {/* Avatar beside the name on wider screens, above it on a phone (agent-identity-* in authoring.css). */}
+          <div className="agent-identity">
+            <div ref={avatarPopoverRef} className="agent-identity-avatar">
               <button
                 type="button"
                 onClick={() => setAvatarOpen((v) => !v)}
@@ -294,10 +295,10 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
               />
               {avatarOpen && (
                 <div
+                  className="agent-identity-picker"
                   style={{
                     position: "absolute",
                     top: "calc(100% + 8px)",
-                    left: 0,
                     width: 212,
                     background: "var(--main-bg)",
                     border: "1px solid var(--main-border)",
@@ -349,8 +350,8 @@ export default function NewAgentModal({ initial, onSaved, onClose }: Props) {
               )}
             </div>
 
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", gap: 8 }}>
+            <div className="agent-identity-fields">
+              <div className="agent-identity-names">
                 <div style={{ flex: 2 }}>
                   <label className="form-label">Name</label>
                   <input

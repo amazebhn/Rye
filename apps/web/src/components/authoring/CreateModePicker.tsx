@@ -1,9 +1,9 @@
 import React from "react";
-import { PackagePlus } from "lucide-react";
+import { PackagePlus, Upload } from "lucide-react";
 import AiMark from "../shared/AiMark";
 
 export type CreateMode = "write" | "ai";
-export type CreateOrInstallMode = CreateMode | "install";
+export type CreateOrInstallMode = CreateMode | "install" | "import";
 
 interface Props<M extends CreateOrInstallMode> {
   noun: string;
@@ -11,6 +11,8 @@ interface Props<M extends CreateOrInstallMode> {
   aiDescription: string;
   /** Adds an "Install" option when set. */
   installDescription?: string;
+  /** Adds an "Import a file" option when set. */
+  importDescription?: string;
   value: M | null;
   onChange: (mode: M) => void;
   onContinue: (mode: M) => void;
@@ -56,11 +58,26 @@ function InstallThumb() {
   );
 }
 
+/** A sheet with an upload mark, in the neutral Write tint. */
+function ImportThumb() {
+  return (
+    <span className="mode-thumb mode-thumb--write" aria-hidden="true">
+      <span className="mode-thumb-sheet">
+        <span className="mode-thumb-spark"><Upload size={14} /></span>
+        <span className="mode-thumb-line" />
+        <span className="mode-thumb-line mode-thumb-line--short" />
+        <span className="mode-thumb-pill" />
+      </span>
+    </span>
+  );
+}
+
 export default function CreateModePicker<M extends CreateOrInstallMode = CreateMode>({
   noun,
   writeDescription,
   aiDescription,
   installDescription,
+  importDescription,
   value,
   onChange,
   onContinue,
@@ -70,6 +87,9 @@ export default function CreateModePicker<M extends CreateOrInstallMode = CreateM
     { mode: "ai", title: "Generate with AI", description: aiDescription, thumb: <AiThumb /> },
     ...(installDescription
       ? [{ mode: "install", title: "Install from GitHub", description: installDescription, thumb: <InstallThumb /> }]
+      : []),
+    ...(importDescription
+      ? [{ mode: "import", title: "Import a file", description: importDescription, thumb: <ImportThumb /> }]
       : []),
   ] as { mode: M; title: string; description: string; thumb: React.ReactNode }[];
 

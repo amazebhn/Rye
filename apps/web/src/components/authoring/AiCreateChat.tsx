@@ -49,6 +49,21 @@ export default function AiCreateChat({
   // Discarding mid-generation must not still create the resource.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // With no model picked, the server uses the "SOP & Skill capture" model from Settings; show that one.
+  const [captureModel, setCaptureModel] = useState<string | undefined>();
+  useEffect(() => {
+    let live = true;
+    fetch("/models/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s: { tasks?: Record<string, string>; tiers?: Record<string, { effective?: string }> } | null) => {
+        const tier = s?.tasks?.extraction;
+        const effective = tier ? s?.tiers?.[tier]?.effective : undefined;
+        if (live && effective) setCaptureModel(effective);
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -201,7 +216,7 @@ export default function AiCreateChat({
           disabled={loading}
         />
         <div className="modal-composer-actions">
-          <ModelSelect value={model} onChange={setModel} disabled={loading} />
+          <ModelSelect value={model} onChange={setModel} disabled={loading} defaultModel={captureModel} />
           {loading ? (
             <button className="sop-chat-stop-btn" onClick={() => abortRef.current?.abort()} aria-label="Stop generating">
               <Square size={10} fill="currentColor" strokeWidth={0} />

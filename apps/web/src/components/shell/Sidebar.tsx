@@ -7,7 +7,6 @@ import {
   Kanban,
   Brain,
   Bot,
-  BarChart3,
   MoreHorizontal,
   MoreVertical,
   Pencil,
@@ -19,8 +18,10 @@ import {
   FolderMinus,
   Check,
   ChevronRight,
+  Plus,
   Search,
   Settings as SettingsIcon,
+  X,
 } from "lucide-react";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -88,6 +89,139 @@ function menuPositionFor(rect: DOMRect) {
   return { top: Math.min(rect.top - 8, window.innerHeight - 220), left };
 }
 
+// Opens below the trigger with its right edge on the trigger's, kept inside the sidebar and the window.
+function dropdownBelow(trigger: HTMLElement) {
+  const gap = 8;
+  const rect = trigger.getBoundingClientRect();
+  const bounds = trigger.closest(".sidebar")?.getBoundingClientRect();
+  const minLeft = (bounds?.left ?? 0) + gap;
+  const maxLeft = Math.min(bounds?.right ?? window.innerWidth, window.innerWidth) - MENU_WIDTH - gap;
+  return { top: rect.bottom + 6, left: Math.max(minLeft, Math.min(rect.right - MENU_WIDTH, maxLeft)) };
+}
+
+/** The Chats header's "+" button: a small menu to start a chat or make a folder. */
+function NewMenu({ onNewChat, onNewFolder }: {
+  onNewChat: () => void;
+  /** Gets the trigger, so focus can go back to it when the folder dialog closes. */
+  onNewFolder: (trigger: HTMLElement | null) => void;
+}) {
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const open = position !== null;
+
+  const close = (focusButton = false) => {
+    setPosition(null);
+    if (focusButton) buttonRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      close(true);
+    };
+    const onResize = () => close();
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open]);
+
+  const show = () => {
+    if (buttonRef.current) setPosition(dropdownBelow(buttonRef.current));
+  };
+
+  const menuKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    if (e.key === "ArrowDown") next = (at + 1) % items.length;
+    else if (e.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else {
+      // Tab leaves the menu: close it rather than let focus fall to the page behind it.
+      if (e.key === "Tab") {
+        e.preventDefault();
+        close(true);
+      }
+      return;
+    }
+    e.preventDefault();
+    items[next]?.focus();
+  };
+
+  const run = (action: () => void) => {
+    setPosition(null);
+    action();
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="icon-btn muted sidebar-new-btn"
+        onClick={() => (open ? close() : show())}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" && !open) {
+            e.preventDefault();
+            show();
+          }
+        }}
+        title="New chat or folder"
+        aria-label="New chat or folder"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? "sidebar-new-menu" : undefined}
+      >
+        <Plus size={16} />
+      </button>
+      {position && (
+        <div
+          ref={menuRef}
+          id="sidebar-new-menu"
+          className="sidebar-dropdown sidebar-new-menu"
+          role="menu"
+          aria-label="New"
+          style={{ top: position.top, left: position.left }}
+          onKeyDown={menuKeys}
+          // The pointer and the arrow keys move one highlight, not two.
+          onMouseMove={(e) => {
+            const item = (e.target as HTMLElement).closest<HTMLButtonElement>('[role="menuitem"]');
+            if (item && item !== document.activeElement) item.focus();
+          }}
+        >
+          <button type="button" className="sidebar-dropdown-item" role="menuitem" onClick={() => run(onNewChat)}>
+            <PenLine size={17} aria-hidden="true" />
+            <span>New chat</span>
+          </button>
+          <button
+            type="button"
+            className="sidebar-dropdown-item"
+            role="menuitem"
+            onClick={() => run(() => onNewFolder(buttonRef.current))}
+          >
+            <FolderPlus size={17} aria-hidden="true" />
+            <span>New folder…</span>
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 type FolderModal =
   | { kind: "create"; moveChatId?: string }
   | { kind: "rename"; folder: ChatFolder }
@@ -104,7 +238,7 @@ interface Props {
   runningChatIds: ReadonlySet<string>;
   envKey: string | undefined;
   onEnvChange: (key: string) => void;
-  activePanel: "home" | "chat" | "sops" | "memory" | "agents" | "analytics" | "settings";
+  activePanel: "home" | "chat" | "sops" | "memory" | "agents" | "settings";
   onNewChat: () => void;
   onClose: () => void;
   onSwitch: (chat: ChatRecord) => void;
@@ -112,13 +246,17 @@ interface Props {
   onOpenSearch: () => void;
   /** The chat list hasn't arrived from the server yet. */
   chatsLoading?: boolean;
-  onDelete: (id: string, e: React.MouseEvent) => void;
+  /** Delete a chat. The sidebar asks for confirmation before calling it. */
+  onDelete: (id: string, e?: React.MouseEvent) => void;
   onRename: (id: string, title: string) => void;
+  /** Home ("/"): the greeting, large composer and starter prompts. */
+  onOpenHome?: () => void;
   onOpenSops: () => void;
   onOpenMemory: () => void;
   onOpenAgents: () => void;
-  onOpenAnalytics: () => void;
   onOpenSettings: () => void;
+  /** Phone width: the sidebar is a drawer over the content (App.tsx), open or slid away. */
+  drawer?: { open: boolean };
 }
 
 export default function Sidebar({
@@ -140,11 +278,12 @@ export default function Sidebar({
   onRename,
   onOpenSearch,
   chatsLoading = false,
+  onOpenHome,
   onOpenSops,
   onOpenMemory,
   onOpenAgents,
-  onOpenAnalytics,
   onOpenSettings,
+  drawer,
 }: Props) {
   const { sops } = useSops();
   const { memories } = useMemories();
@@ -157,11 +296,21 @@ export default function Sidebar({
   const submenuRef = useRef<HTMLDivElement>(null);
   const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
   const [folderModal, setFolderModal] = useState<FolderModal | null>(null);
+  /** The chat waiting for "Delete chat" to be confirmed. */
+  const [confirmDeleteChat, setConfirmDeleteChat] = useState<{ id: string; title: string } | null>(null);
   const [folderName, setFolderName] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [folderBusy, setFolderBusy] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  // The folder dialog doesn't restore focus itself; this is where it goes when the dialog closes.
+  const folderReturnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (folderModal || !folderReturnFocusRef.current) return;
+    folderReturnFocusRef.current.focus();
+    folderReturnFocusRef.current = null;
+  }, [folderModal]);
 
   useEffect(() => {
     if (!openMenuId && !folderMenuId) return;
@@ -438,7 +587,8 @@ export default function Sidebar({
                   onClick={(e) => {
                     e.stopPropagation();
                     closeMenus();
-                    onDelete(chat.id, e);
+                    // Deleting can't be undone, so ask first.
+                    setConfirmDeleteChat({ id: chat.id, title: chatAgent?.name ?? chat.title });
                   }}
                 >
                   <Trash2 size={17} />
@@ -494,28 +644,36 @@ export default function Sidebar({
   }
 
   return (
-    <div className="sidebar">
+    <div
+      className={`sidebar${drawer ? ` sidebar--drawer${drawer.open ? " is-open" : ""}` : ""}`}
+      id="app-sidebar"
+      role={drawer ? "dialog" : undefined}
+      aria-modal={drawer ? true : undefined}
+      aria-label={drawer ? "Menu" : undefined}
+    >
       <div className="sidebar-header">
         <span className="sidebar-wordmark">Rye</span>
-        <button className="icon-btn faint" onClick={onClose} title="Close sidebar">
-          <PanelLeftClose size={18} />
-        </button>
+        {drawer ? (
+          <button type="button" className="icon-btn faint sidebar-close-btn" onClick={onClose} title="Close menu" aria-label="Close menu">
+            <X size={20} aria-hidden="true" />
+          </button>
+        ) : (
+          <button className="icon-btn faint" onClick={onClose} title="Close sidebar">
+            <PanelLeftClose size={18} />
+          </button>
+        )}
       </div>
 
       {/* Quick Access */}
       <div className="sidebar-section">
 
-        <button className="sidebar-nav-item" disabled title="Coming soon">
+        <button
+          className={`sidebar-nav-item${activePanel === "home" ? " active" : ""}`}
+          onClick={onOpenHome}
+          disabled={!onOpenHome}
+        >
           <Home size={13} />
           <span>Home</span>
-        </button>
-
-        <button
-          className={`sidebar-nav-item${activePanel === "analytics" ? " active" : ""}`}
-          onClick={onOpenAnalytics}
-        >
-          <BarChart3 size={13} />
-          <span>Analytics</span>
         </button>
 
         <button
@@ -567,12 +725,16 @@ export default function Sidebar({
             <button className="icon-btn muted" onClick={onOpenSearch} title={`Search chats (${isMac ? "⌘K" : "Ctrl+K"})`} aria-label="Search chats and messages">
               <Search size={15} />
             </button>
-            <button className="icon-btn muted" onClick={() => openFolderModal({ kind: "create" })} title="New folder" aria-label="New folder">
-              <FolderPlus size={15} />
-            </button>
-            <button className="icon-btn muted" onClick={onNewChat} title="New chat" aria-label="New chat">
-              <PenLine size={15} />
-            </button>
+            <NewMenu
+              onNewChat={() => {
+                closeMenus();
+                onNewChat();
+              }}
+              onNewFolder={(trigger) => {
+                folderReturnFocusRef.current = trigger;
+                openFolderModal({ kind: "create" });
+              }}
+            />
           </span>
         </div>
         <div className="sidebar-list">
@@ -716,6 +878,33 @@ export default function Sidebar({
               onFocus={(event) => event.currentTarget.select()}
             />
           </form>
+        </Modal>
+      )}
+
+      {confirmDeleteChat && (
+        <Modal
+          title={`Delete “${confirmDeleteChat.title.length > 60 ? `${confirmDeleteChat.title.slice(0, 60)}…` : confirmDeleteChat.title}”?`}
+          description="The chat and all its messages are deleted. This can't be undone."
+          className="sidebar-rename-modal modal--compact"
+          onClose={() => setConfirmDeleteChat(null)}
+          footer={
+            <>
+              <ModalCancelButton autoFocus />
+              <button
+                type="button"
+                className="btn btn--danger btn--sm"
+                onClick={() => {
+                  const { id } = confirmDeleteChat;
+                  setConfirmDeleteChat(null);
+                  onDelete(id);
+                }}
+              >
+                Delete chat
+              </button>
+            </>
+          }
+        >
+          {null}
         </Modal>
       )}
 

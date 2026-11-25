@@ -14,6 +14,8 @@ interface StoredResultSummary {
 interface Props {
   sessionId?: string;
   onSelect: (id: string) => void;
+  /** Opened from elsewhere (the chat ⋯ menu on a phone): no button of its own, and `open` comes from the caller. */
+  controlled?: { open: boolean; onOpenChange: (open: boolean) => void };
 }
 
 function relativeTime(timestamp: number): string {
@@ -30,8 +32,15 @@ function sourceLabel(source: string): string {
   return source.replace(/_tool$/, "").replace(/_/g, " ");
 }
 
-export default function StoredResultsPicker({ sessionId, onSelect }: Props) {
-  const [open, setOpen] = useState(false);
+export default function StoredResultsPicker({ sessionId, onSelect, controlled }: Props) {
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = controlled ? controlled.open : ownOpen;
+  const onOpenChange = controlled?.onOpenChange;
+  const setOpen = (next: boolean | ((was: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(open) : next;
+    if (onOpenChange) onOpenChange(value);
+    else setOwnOpen(value);
+  };
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<StoredResultSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -95,17 +104,19 @@ export default function StoredResultsPicker({ sessionId, onSelect }: Props) {
 
   return (
     <div className="stored-results-picker" ref={rootRef}>
-      <button
-        type="button"
-        className={`chat-header-db-btn${open ? " active" : ""}`}
-        onClick={() => setOpen((value) => !value)}
-        title="Stored queries and results"
-        aria-label="Browse stored queries and results"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-      >
-        <Database size={16} />
-      </button>
+      {!controlled && (
+        <button
+          type="button"
+          className={`chat-header-db-btn${open ? " active" : ""}`}
+          onClick={() => setOpen((value) => !value)}
+          title="Stored queries and results"
+          aria-label="Browse stored queries and results"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+        >
+          <Database size={16} />
+        </button>
+      )}
 
       {open && (
         <section className="stored-results-popover" role="dialog" aria-label="Stored queries and results">

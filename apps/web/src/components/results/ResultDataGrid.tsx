@@ -1,7 +1,8 @@
 import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, BarChart3, Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy, Rows3, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, BarChart3, Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy, Search } from "lucide-react";
 import { TableToolbarSlot } from "../shared/TableFrame";
+import { useStripedRows } from "../../utils/tablePrefs";
 import ResultChart from "./ResultChart";
 import { numericColumns } from "../../utils/chartSpec";
 
@@ -166,7 +167,8 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
   const [groupBy, setGroupBy] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [timeZone, setTimeZone] = useState<TimeZoneMode>("local");
-  const [striped, setStriped] = useState(true);
+  // Set in Settings → General (it used to be a toggle in this toolbar).
+  const striped = useStripedRows();
   const [charting, setCharting] = useState(false);
   const [query, setQuery] = useState("");
   const toolbarSlot = useContext(TableToolbarSlot);
@@ -397,16 +399,6 @@ export default function ResultDataGrid({ columns, rows, pageSize = 500 }: Result
             </select>
           </label>
         )}
-        <button
-          type="button"
-          className="result-data-toggle result-data-toggle--icon"
-          aria-pressed={striped}
-          aria-label="Striped rows"
-          title="Striped rows"
-          onClick={() => setStriped((value) => !value)}
-        >
-          <Rows3 size={14} aria-hidden="true" />
-        </button>
         {sort && (
           <button type="button" className="result-data-sort-clear" onClick={clearSort}>
             Clear sort
