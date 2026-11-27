@@ -19,15 +19,20 @@ import CodeBlock from "./CodeBlock";
 import MarkdownTable from "./MarkdownTable";
 import { ChartSessionContext } from "./ChartBlock";
 import ArtifactCard, { artifactRefs } from "../artifacts/ArtifactCard";
+import CodeSessionCard, { codeSessionRefs } from "../code/CodeSessionCard";
 import TableFrame from "../shared/TableFrame";
 import ResultDataGrid from "../results/ResultDataGrid";
 import AgentAvatar from "../agents/AgentAvatar";
 import AgentHoverCard, { AgentMentionPill, AgentMentionText } from "../agents/AgentHoverCard";
 import MentionComposer from "./MentionComposer";
 import AttachmentChips from "./AttachmentChips";
+import SelectionActions, { clipRangeTo, type SelectionAction } from "../shared/SelectionActions";
+import type { QuoteSource } from "../../utils/attachments";
+import { addContextToChat, quoteRef } from "../../utils/contextRefs";
 import { useAgents } from "../../contexts/AgentContext";
 import {
   ArrowDown,
+  MessageSquarePlus,
   Check,
   CircleAlert,
   Copy,
@@ -38,7 +43,9 @@ import {
   Pause,
   Play,
   X,
+  Zap,
 } from "lucide-react";
+import { openQuickChat } from "../../utils/quickChat";
 
 // Distance from the bottom that still counts as "at the latest message".
 const NEAR_BOTTOM_PX = 80;
@@ -623,9 +630,62 @@ function WideTable({
   );
 }
 
+/**
+ * Narrows a selection to one reply's text, so a drag begun in the margin, on the name or in the message
+ * above still quotes the reply it ends in (or, failing that, the one it starts in, or the last one it
+ * covers). A selection already inside one reply's text is kept as it is.
+ */
+function clipToReply(range: Range): Range | null {
+  const at = (node: Node) => (node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement);
+  const replyText = (node: Node) => {
+    const body = at(node)?.closest(".md-body");
+    return body && !body.closest(".message-row.user") ? body : null;
+  };
+  const startBody = replyText(range.startContainer);
+  const endBody = replyText(range.endContainer);
+  if (startBody && endBody && startBody.closest(".message-row") === endBody.closest(".message-row")) return range;
+  let body = endBody ?? startBody;
+  if (!body) {
+    const scope = at(range.commonAncestorContainer);
+    const covered = [...(scope?.querySelectorAll(".message-row:not(.user) .md-body") ?? [])].filter((b) => range.intersectsNode(b));
+    body = covered[covered.length - 1] ?? null;
+  }
+  return body ? clipRangeTo(range, body) : null;
+}
+
+/** A selection wholly inside one reply's text (not a tool step, not a user message): quoted as "Rye's reply". */
+function describeReplySelection(range: Range): QuoteSource | null {
+  const at = (node: Node) => (node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement);
+  const start = at(range.startContainer);
+  const end = at(range.endContainer);
+  const row = start?.closest(".message-row");
+  if (!row || row.classList.contains("user") || end?.closest(".message-row") !== row) return null;
+  if (!start?.closest(".md-body") || !end?.closest(".md-body")) return null;
+  return { kind: "message", label: "Rye's reply" };
+}
+
+const QUOTE_ACTIONS: SelectionAction<QuoteSource>[] = [
+  {
+    id: "add-to-chat",
+    label: "Add to chat",
+    icon: MessageSquarePlus,
+    onSelect: (sel) => addContextToChat(quoteRef(sel.text, sel.meta)),
+  },
+  {
+    id: "ask-quick-chat",
+    label: "Ask in quick chat",
+    icon: Zap,
+    onSelect: (sel) => openQuickChat({ quote: quoteRef(sel.text, sel.meta) }),
+  },
+];
+
 interface Props {
   messages: RenderMessage[];
   chatId?: string;
+  /** Offer "Add to chat" on text selected in a reply (SelectionActions), quoting it into the composer. */
+  enableQuoteActions?: boolean;
+  /** Whose reply a quote is, as its chip and the model see it ("Rye's reply"; a code session's agent's in a code chat). */
+  quoteLabel?: string;
   /** A message to scroll to and briefly highlight (a search result); `token` changes on every request. */
   focusMessage?: { index: number; token: number };
   sessionId: string;
@@ -638,6 +698,8 @@ interface Props {
   onResubmit: (userIndex: number, text: string) => void;
   pendingPrompt?: PendingPrompt;
   onPromptAnswer: (answer: string) => void;
+  /** Drawn under a reply (after its cards), given the index of the reply's last message: a code chat's changes summary. */
+  afterReply?: (lastIndex: number) => React.ReactNode;
 }
 
 interface MessageProps {
@@ -659,11 +721,14 @@ interface MessageProps {
   onPromptAnswer: (answer: string) => void;
   continuing: boolean;
   setContinuing: React.Dispatch<React.SetStateAction<boolean>>;
+  afterReply?: (lastIndex: number) => React.ReactNode;
 }
 
 export default function MessageList({
   messages,
   chatId,
+  enableQuoteActions = false,
+  quoteLabel,
   focusMessage,
   sessionId,
   loading,
@@ -675,6 +740,7 @@ export default function MessageList({
   onResubmit,
   pendingPrompt,
   onPromptAnswer,
+  afterReply,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -935,6 +1001,10 @@ export default function MessageList({
         break;
       }
     }
+    // A code session's live approval can come before any tool call shows: it belongs to the running reply.
+    if (promptMessageIndex === -1 && pendingPrompt.live && messages[messages.length - 1]?.role === "assistant") {
+      promptMessageIndex = messages.length - 1;
+    }
   }
 
   const lastIndex = messages.length - 1;
@@ -974,6 +1044,7 @@ export default function MessageList({
     canResubmit,
     continuing,
     setContinuing,
+    afterReply,
   };
 
   return (
@@ -1020,6 +1091,15 @@ export default function MessageList({
           )}
         </div>
       </div>
+      {enableQuoteActions && (
+        <SelectionActions
+          containerRef={contentRef}
+          actions={QUOTE_ACTIONS}
+          clip={clipToReply}
+          describe={quoteLabel ? (range) => { const s = describeReplySelection(range); return s && { ...s, label: quoteLabel }; } : describeReplySelection}
+          label="Reply selection"
+        />
+      )}
       {jumpVisible && (
         <button
           type="button"
@@ -1087,7 +1167,10 @@ function AssistantSegment({
   const failure = runFailure(msg);
   const pause = pauseInfo(msg);
   const answer = failure ? failure.answer : pause.content;
-  const artifacts = artifactRefs([...(msg.turns ?? []).flatMap((t) => t.toolCalls), ...(msg.toolCalls ?? [])]);
+  const allCalls = [...(msg.turns ?? []).flatMap((t) => t.toolCalls), ...(msg.toolCalls ?? [])];
+  const artifacts = artifactRefs(allCalls);
+  // Code sessions started from this reply (`[rye:code-session:<id>]`); the card hides itself until code sessions exist.
+  const codeSessions = codeSessionRefs(allCalls);
   return (
     <>
       <ActivityTimeline
@@ -1120,6 +1203,11 @@ function AssistantSegment({
             {artifacts.map((a) => (
               <ArtifactCard key={a.id} id={a.id} version={a.version} sessionId={sessionId} onOpen={onOpenArtifact} />
             ))}
+          </div>
+        )}
+        {codeSessions.length > 0 && (
+          <div className="artifact-cards">
+            {codeSessions.map((id) => <CodeSessionCard key={id} id={id} />)}
           </div>
         )}
         {showTyping && <TypingIndicator />}
@@ -1171,6 +1259,7 @@ export function Message({
   onEdit,
   continuing,
   setContinuing,
+  afterReply,
 }: MessageProps) {
   const msg = msgs[0];
   const lastMsg = msgs[msgs.length - 1];
@@ -1217,7 +1306,11 @@ export function Message({
   const meta = mergeMeta(segments);
 
   return (
-    <div className={`message-row${isUserMessage ? " user" : ""}`} data-message-start={index} data-message-end={index + msgs.length - 1}>
+    <div
+      className={`message-row${isUserMessage ? " user" : ""}${isLast && !isUserMessage ? " is-latest-reply" : ""}`}
+      data-message-start={index}
+      data-message-end={index + msgs.length - 1}
+    >
       <span
         className={`message-role${isUserMessage ? " user" : " assistant"}`}
         aria-label={respondingAgent ? respondingAgent.name : undefined}
@@ -1260,6 +1353,7 @@ export function Message({
               />
             );
           })}
+        {!isUserMessage && afterReply?.(index + msgs.length - 1)}
         {isUserMessage &&
           (editing ? (
             <div className="user-edit">
@@ -1317,7 +1411,10 @@ export function Message({
           ))}
         {!isUserMessage && !streaming && replyMarkdown(msgs) && (
           <button
+            type="button"
             className="icon-btn copy"
+            aria-label="Copy reply"
+            title="Copy"
             onClick={() => {
               navigator.clipboard.writeText(replyMarkdown(msgs));
             }}

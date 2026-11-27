@@ -26,11 +26,15 @@ import { ChatExamples, ChatHero } from "./components/chat/ChatHome";
 import ArtifactsPanel, { readArtifactsPinned, rememberArtifactsPinned, useCanPinArtifacts, type ArtifactsView } from "./components/artifacts/ArtifactsPanel";
 import { ArtifactsPanelContext, type ArtifactsPanelControl } from "./components/artifacts/ArtifactsPanelContext";
 import { useChatArtifacts } from "./components/artifacts/useChatArtifacts";
+import { useKindView } from "./chat/kinds";
 import FolderSuggestionToast from "./components/shell/FolderSuggestionToast";
 import NotificationNudge from "./components/shell/NotificationNudge";
+import QuickChat, { focusQuickChatComposer } from "./components/quick/QuickChat";
+import { QUICK_CHAT_EVENT, type QuickChatDetail } from "./utils/quickChat";
 import { notifyRunEnd, useNotifications } from "./utils/notifications";
 import { useChatFolders } from "./components/shell/useChatFolders";
-import { MAX_ATTACHMENTS, readyRefs, refForServer, refKey, uploadAttachment, type AttachmentRef, type ContextRef, type PendingAttachment } from "./utils/attachments";
+import { MAX_ATTACHMENTS, readyRefs, refForServer, refKey, refLabel, uploadAttachment, type AttachmentRef, type ContextRef, type PendingAttachment } from "./utils/attachments";
+import { ADD_CONTEXT_EVENT, type AddContextDetail } from "./utils/contextRefs";
 import { PANEL_PATHS, parseAppPath, redirectMovedPath, settingsPath, sopPath, type AppRoute } from "./utils/routes";
 import type { ToolFocus } from "./components/settings/ToolsSection";
 
@@ -58,6 +62,31 @@ function readActiveChatId(): string | undefined {
 const DRAFTS_STORAGE_KEY = "rye.drafts";
 // Draft key for a new chat that has no id yet.
 const NEW_CHAT_DRAFT = "new";
+
+/**
+ * The quick chat (components/quick/QuickChat.tsx): Rye's chat in a floating card, run through the same
+ * sendMessage as any chat under this id (runs, drafts, files, references, the queue). It is never in
+ * `chats`: upsertChat writes it to `quickChat` instead, so it is neither listed nor saved (and never
+ * deleted by absence) until "Save as chat" makes a real chat of it. Its draft isn't kept in localStorage.
+ */
+const QUICK_CHAT_ID = "quick-chat";
+
+interface QuickChatState {
+  sessionId?: string;
+  messages: RenderMessage[];
+  prompt?: PendingPrompt;
+}
+
+/** Where a send from a composer goes: the chat on screen (or a new one), or the quick chat. */
+interface ChatTarget {
+  /** Undefined for a new chat, which gets its id on the first send. */
+  chatId: string | undefined;
+  draftKey: string;
+  messages: RenderMessage[];
+  sessionId: string | undefined;
+  prompt: PendingPrompt | null;
+  loading: boolean;
+}
 
 // The model last picked or sent with, so a new chat starts on it rather than on whatever the open chat uses.
 const LAST_MODEL_KEY = "rye-last-model";
@@ -337,6 +366,23 @@ export default function App() {
     updateRefs(key, (items) => (items.some((r) => refKey(r) === refKey(ref)) || items.length >= 10 ? items : [...items, ref]));
   }, [updateRefs]);
   const removeRef = useCallback((key: string, k: string) => updateRefs(key, (items) => items.filter((r) => refKey(r) !== k)), [updateRefs]);
+  // `addContextToChat` (utils/contextRefs.ts) from anywhere: a quote of a reply or a diff into a chat's draft.
+  const addContextRef = useRef<(detail: AddContextDetail) => void>(() => {});
+  addContextRef.current = ({ ref, chatId, focus }: AddContextDetail) => {
+    addRef(chatId ?? draftKey, ref);
+    const target = chatId && chatId !== activeChatId && focus ? chatsRef.current.find((c) => c.id === chatId) : undefined;
+    if (target) switchToChat(target);
+    // After the chip renders (and the chat opens), so the caret lands in the composer.
+    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(".chat-input")?.focus({ preventScroll: true })));
+  };
+  useEffect(() => {
+    const onAdd = (e: Event) => {
+      const detail = (e as CustomEvent<AddContextDetail>).detail;
+      if (detail?.ref) addContextRef.current(detail);
+    };
+    window.addEventListener(ADD_CONTEXT_EVENT, onAdd);
+    return () => window.removeEventListener(ADD_CONTEXT_EVENT, onAdd);
+  }, []);
   const removeFile = useCallback((key: string, fileKey: string) => {
     updateFiles(key, (items) => {
       const gone = items.find((a) => a.key === fileKey);
@@ -351,12 +397,33 @@ export default function App() {
     setMessageQueue(messageQueueRef.current);
   }, []);
   const [pendingContext, setPendingContext] = useState<string | undefined>();
+  // The quick chat's saved state (what upsertChat writes for QUICK_CHAT_ID), whether its card shows, and a
+  // counter that changes with each new quick conversation (New, Save as chat) so its message list starts afresh.
+  const [quickChat, setQuickChat] = useState<QuickChatState>({ messages: [] });
+  const quickChatRef = useRef(quickChat);
+  quickChatRef.current = quickChat;
+  const [quickOpen, setQuickOpen] = useState(false);
+  const quickOpenRef = useRef(false);
+  quickOpenRef.current = quickOpen;
+  const [quickEpoch, setQuickEpoch] = useState(0);
   // Model for the active chat. Sent with each /chat request so what the
   // dropdown shows is exactly what the session uses (no hidden global drift).
   const [selectedModel, setSelectedModel] = useState<string | undefined>();
   const selectedModelRef = useRef<string | undefined>(undefined);
   useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Desktop: the sidebar slides in when shown and out before it unmounts (shell.css; none under reduced motion).
+  const [sidebarMotion, setSidebarMotion] = useState<"in" | "out" | null>(null);
+  const reducedMotion = () =>
+    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const collapseSidebar = useCallback(() => {
+    if (reducedMotion()) setSidebarOpen(false);
+    else setSidebarMotion("out");
+  }, []);
+  const endSidebarMotion = useCallback((motion: "in" | "out") => {
+    if (motion === "out") setSidebarOpen(false);
+    setSidebarMotion(null);
+  }, []);
   // Phone width: the sidebar is a drawer over the content with its own open state, so the desktop
   // column's expanded/collapsed state survives resizing between the two. Presentation only.
   const isMobile = useIsMobile();
@@ -412,6 +479,7 @@ export default function App() {
         setDrawerOpen(true);
       } else {
         setSidebarOpen(true);
+        setSidebarMotion(reducedMotion() ? null : "in");
       }
     },
   }), [isMobile, drawerOpen, sidebarOpen]);
@@ -577,8 +645,31 @@ export default function App() {
   const visiblePrompt = activeRun ? activeRun.prompt : (activeChat?.pendingPrompt ?? null);
   const contextPct = activeRun?.contextPct;
   const activeQueue = messageQueue.filter((m) => m.chatId === activeChatId);
+  // The two places a composer sends from: the chat on screen and the quick chat.
+  const mainTarget: ChatTarget = {
+    chatId: activeChatId,
+    draftKey,
+    messages: displayMessages,
+    sessionId: displaySessionId || undefined,
+    prompt: visiblePrompt,
+    loading,
+  };
+  const quickRun = runs[QUICK_CHAT_ID];
+  const quickTarget: ChatTarget = {
+    chatId: QUICK_CHAT_ID,
+    draftKey: QUICK_CHAT_ID,
+    messages: quickRun ? quickRun.messages : quickChat.messages,
+    sessionId: quickRun?.sessionId ?? quickChat.sessionId,
+    prompt: quickRun ? quickRun.prompt : (quickChat.prompt ?? null),
+    loading: Boolean(quickRun?.running),
+  };
+  // Read by a quick chat edit or retry, which sends the messages it rewinds (the server has no copy of them).
+  const quickMessagesRef = useRef(quickTarget.messages);
+  quickMessagesRef.current = quickTarget.messages;
+  const quickQueue = messageQueue.filter((m) => m.chatId === QUICK_CHAT_ID);
+  // The quick chat isn't a listed chat: not shown running in the sidebar, nor announced to other tabs.
   const runningChatIds = useMemo(
-    () => new Set(Object.keys(runs).filter((id) => runs[id].running)),
+    () => new Set(Object.keys(runs).filter((id) => runs[id].running && id !== QUICK_CHAT_ID)),
     [runs],
   );
   const sidebarRunningIds = useMemo(
@@ -611,7 +702,8 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const kept = Object.entries(drafts).filter(([, text]) => text.length <= MAX_PERSISTED_DRAFT);
+      // The quick chat's draft goes with it on a reload.
+      const kept = Object.entries(drafts).filter(([key, text]) => key !== QUICK_CHAT_ID && text.length <= MAX_PERSISTED_DRAFT);
       if (kept.length) window.localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(Object.fromEntries(kept)));
       else window.localStorage.removeItem(DRAFTS_STORAGE_KEY);
     } catch {
@@ -834,6 +926,9 @@ export default function App() {
   }, [commitRuns, updateQueue]);
   useSyncRefresh("chats", () => void refreshChats());
 
+  // A chat of another kind (a code session) has a view of its own (chat/kinds.tsx), once the server supports the kind.
+  const KindView = useKindView(activeChat);
+
   useEffect(() => {
     const localRunning = () => [...runsRef.current].filter(([, run]) => run.running).map(([id]) => id);
     // Tab id -> last time it announced; tabs that miss a roll call are dropped (closed or crashed).
@@ -887,6 +982,13 @@ export default function App() {
   }, [runningKey]);
 
   const upsertChat = useCallback((id: string, sid: string, msgs: RenderMessage[], prompt?: PendingPrompt) => {
+    // The quick chat is kept in its own state, never in `chats` (so never listed, saved or deleted by absence).
+    // A run that hasn't learned its session yet passes the chat id as one: that is no session.
+    if (id === QUICK_CHAT_ID) {
+      const sessionId = sid === QUICK_CHAT_ID ? quickChatRef.current.sessionId : sid;
+      setQuickChat({ sessionId, messages: msgs, ...(prompt ? { prompt } : {}) });
+      return;
+    }
     if (deletedChatIdsRef.current.has(id)) return;
     const fallbackTitle = msgs.find((m) => m.role === "user" && !m.kind)?.content.slice(0, 60) ?? "New chat";
     setChats((prev) => {
@@ -976,6 +1078,32 @@ export default function App() {
     setSelectedModel(chat.model);
     navigate(chatPath(chat.id));
   }
+
+  /**
+   * Opens a chat the server made (a new code session, a session's card in its parent chat). The list
+   * may not have it yet, so it is re-read first; only adding to the list, never dropping from it.
+   */
+  async function openChatById(chatId: string, title = "Code session") {
+    if (!chatsRef.current.some((c) => c.id === chatId)) await refreshChats();
+    // refreshChats updates remoteRef at once; the list state (and chatsRef) catch up on the next render.
+    const found = chatsRef.current.find((c) => c.id === chatId) ?? remoteRef.current.get(chatId);
+    if (found) return switchToChat(found);
+    // Not listed yet: show it now, its messages to be fetched like any unopened chat.
+    const placeholder: ChatRecord = { id: chatId, title, sessionId: "", messages: [], updatedAt: Date.now(), kind: "code", partial: true };
+    deletedChatIdsRef.current.delete(chatId);
+    setChats((prev) => (prev.some((c) => c.id === chatId) ? prev : normalizeChats([placeholder, ...prev])));
+    switchToChat(placeholder);
+  }
+  const openChatByIdRef = useRef(openChatById);
+  openChatByIdRef.current = openChatById;
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const chatId = (e as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (chatId) void openChatByIdRef.current(chatId);
+    };
+    window.addEventListener("rye:open-chat", onOpen);
+    return () => window.removeEventListener("rye:open-chat", onOpen);
+  }, []);
 
   function openAgentChat(agent: AgentRecord) {
     const existing = chatsRef.current.find((c) => c.agentId === agent.id);
@@ -1078,6 +1206,107 @@ export default function App() {
     navigate(chatPath(newChatId));
   }
 
+  /**
+   * Forgets the quick conversation (New, leaving the page). Its server session (history, results, files) is
+   * deleted too, unless `keepSession`: it now belongs to the chat it was saved as. The draft is left alone.
+   */
+  function clearQuickChat(keepSession = false) {
+    const run = runsRef.current.get(QUICK_CHAT_ID);
+    const sid = run?.sessionId ?? quickChatRef.current.sessionId;
+    if (run) {
+      // Dropped before the abort, so nothing the stopped run still writes reaches the next conversation.
+      runsRef.current.delete(QUICK_CHAT_ID);
+      commitRuns();
+      run.controller.abort();
+    }
+    if (sid && !keepSession) {
+      void fetch(`/chat/session/${encodeURIComponent(sid)}`, { method: "DELETE", keepalive: true }).catch(() => {});
+    }
+    updateQueue((q) => q.filter((m) => m.chatId !== QUICK_CHAT_ID));
+    setQuickChat({ messages: [] });
+    setQuickEpoch((n) => n + 1);
+  }
+  const clearQuickChatRef = useRef(clearQuickChat);
+  clearQuickChatRef.current = clearQuickChat;
+  // A reload (or leaving the page) loses the quick chat: its session is deleted on the way out.
+  useEffect(() => {
+    const onHide = () => {
+      const q = quickChatRef.current;
+      if (runsRef.current.has(QUICK_CHAT_ID) || q.sessionId || q.messages.length > 0) clearQuickChatRef.current();
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, []);
+
+  /**
+   * Quick chat's "Save as chat": a regular chat with its messages and session (so the model keeps its context),
+   * added to the list through upsertChat like any new chat, titled like one, then opened. From then on it is
+   * an ordinary chat on the chat's own model; the quick card closes, empty.
+   */
+  function saveQuickChat() {
+    const { messages, sessionId, prompt, loading: running } = quickTarget;
+    if (running || !sessionId || messages.length === 0) return;
+    clearQuickChat(true);
+    setQuickOpen(false);
+    const id = crypto.randomUUID();
+    upsertChat(id, sessionId, messages, prompt ?? undefined);
+    switchToChat({ id, title: "New chat", sessionId, messages, updatedAt: Date.now(), model: selectedModelRef.current });
+    const firstUser = messages.find((m) => m.role === "user" && !m.kind);
+    const lastReply = [...messages].reverse().find((m) => m.role === "assistant");
+    if (firstUser) {
+      const said =
+        firstUser.content.trim() ||
+        [...(firstUser.attachments ?? []).map((a) => a.name), ...(firstUser.references ?? []).map(refLabel)].join(", ");
+      generateTitle(id, said, lastReply?.content ?? "");
+    }
+  }
+
+  // openQuickChat / toggleQuickChat (utils/quickChat.ts) from anywhere, and Cmd+J (Ctrl+J elsewhere, where the
+  // browser would open its Downloads page) to show or hide it. A quote becomes a chip in its composer.
+  const onQuickChatEventRef = useRef<(detail: QuickChatDetail) => void>(() => {});
+  onQuickChatEventRef.current = (detail) => {
+    if (detail.action === "toggle" && quickOpenRef.current) {
+      setQuickOpen(false);
+      return;
+    }
+    if (detail.quote) addRef(QUICK_CHAT_ID, detail.quote);
+    const text = detail.text?.trim();
+    if (text) {
+      setDrafts((prev) => {
+        const cur = prev[QUICK_CHAT_ID] ?? "";
+        return { ...prev, [QUICK_CHAT_ID]: cur.trim() ? `${cur}\n\n${text}` : text };
+      });
+    }
+    setQuickOpen(true);
+    focusQuickChatComposer();
+  };
+  useEffect(() => {
+    const onEvent = (e: Event) => {
+      const detail = (e as CustomEvent<QuickChatDetail>).detail;
+      if (detail) onQuickChatEventRef.current(detail);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "j" || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      e.preventDefault();
+      onQuickChatEventRef.current({ action: "toggle" });
+    };
+    window.addEventListener(QUICK_CHAT_EVENT, onEvent);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener(QUICK_CHAT_EVENT, onEvent);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, []);
+
+  /** A file the quick chat wrote: there is no Artifacts panel for it (Save as chat to get one), so it downloads. */
+  function downloadQuickArtifact(id: string, version: number) {
+    const sid = quickTarget.sessionId;
+    if (!sid) return;
+    const a = document.createElement("a");
+    a.href = `/artifact/${encodeURIComponent(id)}/download?session_id=${encodeURIComponent(sid)}&version=${version}`;
+    a.click();
+  }
+
   /** Home: the greeting with the large composer and starter prompts. Leaves the chat list alone. */
   function goHome() {
     setPendingContext(undefined);
@@ -1099,8 +1328,11 @@ export default function App() {
     files?: AttachmentRef[],
     // SOPs and tools the message is pointed at; same rule as files.
     refs?: ContextRef[],
+    // Which composer and conversation a send without `continuation` belongs to: the chat on screen, or the quick chat.
+    target: ChatTarget = mainTarget,
   ) {
-    const text = (overrideText ?? input).trim();
+    const { draftKey } = target;
+    const text = (overrideText ?? drafts[draftKey] ?? "").trim();
     const fromComposer = overrideText === undefined && !continuation;
     const composerFiles = fromComposer ? (fileDraftsRef.current[draftKey] ?? []) : [];
     // Wait for uploads to finish (the send button is disabled meanwhile; this covers Enter).
@@ -1113,7 +1345,10 @@ export default function App() {
       updateFiles(draftKey, () => []);
     }
     if (fromComposer && pointing.length > 0) updateRefs(draftKey, () => []);
-    const chatId = continuation?.chatId ?? activeChatId ?? crypto.randomUUID();
+    const chatId = continuation?.chatId ?? target.chatId ?? crypto.randomUUID();
+    // The quick chat runs like any chat; what differs: the server picks its model (`quick: true`), it isn't
+    // listed (upsertChat keeps it apart), and it never takes over the address, the title or notifications.
+    const quick = chatId === QUICK_CHAT_ID;
     if (deletedChatIdsRef.current.has(chatId)) return;
     // A chat whose messages haven't loaded can't be sent into: the run would start from an empty
     // history and saving it would replace the real one. The composer is disabled until it loads.
@@ -1134,19 +1369,22 @@ export default function App() {
     // Only a composer send consumes the draft; prompt answers, Continue and queued sends leave it.
     if (overrideText === undefined) setDraft(draftKey, "");
 
-    const serverText = pendingContext && !continuation ? `${pendingContext}\n\n${text}` : text;
-    if (!continuation) setPendingContext(undefined);
+    // The context a new chat was started with (a SQL result) belongs to the main chat's first message.
+    const serverText = pendingContext && !continuation && !quick ? `${pendingContext}\n\n${text}` : text;
+    if (!continuation && !quick) setPendingContext(undefined);
 
     const controller = new AbortController();
-    const startSessionId = continuation ? continuation.sessionId : (displaySessionId || undefined);
-    const baseMessages = continuation?.baseMessages ?? displayMessages;
-    const model = continuation
-      ? (continuation.model ?? chatsRef.current.find((c) => c.id === chatId)?.model ?? selectedModelRef.current)
-      : selectedModelRef.current;
+    const startSessionId = continuation ? continuation.sessionId : target.sessionId;
+    const baseMessages = continuation?.baseMessages ?? target.messages;
+    const model = quick
+      ? undefined
+      : continuation
+        ? (continuation.model ?? chatsRef.current.find((c) => c.id === chatId)?.model ?? selectedModelRef.current)
+        : selectedModelRef.current;
     const env = resolveEnv(chatId);
     const chatAgentId = chatsRef.current.find((c) => c.id === chatId)?.agentId;
     // What the user last sent with is what a new chat starts on (agent chats use their agent's model).
-    if (!continuation && !chatAgentId) rememberLastModel(model);
+    if (!continuation && !chatAgentId && !quick) rememberLastModel(model);
     const turnId = crypto.randomUUID();
     // Typing "continue" at a paused reply is the same action as the Continue button.
     const turnKind = kind ?? (/^continue[.!]?$/i.test(text) && baseMessages.at(-1)?.paused ? "continue" : undefined);
@@ -1197,8 +1435,14 @@ export default function App() {
       sawFirstOutput = true;
       patchMeta(() => ({ firstTokenAt: Date.now() }));
     };
-    // Don't yank the user back if they navigated away while the queue drained.
-    if (!continuation) {
+    // Saves the run into its chat. A quick chat cleared (New) or saved as a chat while this run was going has
+    // dropped the run, so a late write from it (its abort, say) must not bring the old conversation back.
+    const saveChat = (sid: string, msgs: RenderMessage[], prompt?: PendingPrompt) => {
+      if (quick && runsRef.current.get(chatId)?.controller !== controller) return;
+      upsertChat(chatId, sid, msgs, prompt);
+    };
+    // Don't yank the user back if they navigated away while the queue drained. The quick chat stays in its card.
+    if (!continuation && !quick) {
       // The first message of a blank new chat: its greeting floats away instead of vanishing.
       if (blankChat && displayMessages.length === 0) setHeroExitId(chatId);
       setActiveChatId(chatId);
@@ -1210,6 +1454,9 @@ export default function App() {
     let streamPaused = false;
     let hadPrompt = false;
     let aborted = false;
+    // Set by `done` or `error`. A stream that closes without either (a server restart mid-run, a server bug
+    // that skips `done`) would otherwise leave the reply unsaved, and it blanks out once the run is gone.
+    let streamEnded = false;
     let currentPrompt: PendingPrompt | undefined;
 
     try {
@@ -1222,9 +1469,18 @@ export default function App() {
           session_id: startSessionId,
           model,
           turn_id: turnId,
+          // The server runs it on the low model tier and never auto-routes it or adds agent follow-ups.
+          ...(quick ? { quick: true } : {}),
           ...(env ? { env } : {}),
           ...(chatAgentId ? { agent_id: chatAgentId } : {}),
-          ...(rewindIndex !== undefined ? { rewind: { chat_id: chatId, index: rewindIndex } } : {}),
+          // The quick chat isn't stored on the server, so an edit or retry sends the messages it rewinds.
+          ...(rewindIndex !== undefined
+            ? {
+                rewind: quick
+                  ? { index: rewindIndex, messages: quickMessagesRef.current.map(({ role, content, id }) => ({ role, content, ...(id ? { id } : {}) })) }
+                  : { chat_id: chatId, index: rewindIndex },
+              }
+            : {}),
           ...(sending.length > 0 ? { attachments: sending.map((a) => a.id) } : {}),
           ...(pointing.length > 0 ? { references: pointing.map(refForServer) } : {}),
         }),
@@ -1259,7 +1515,7 @@ export default function App() {
             if (event.type === "session" && event.session_id) {
               currentSessionId = event.session_id;
               patchRun({ sessionId: event.session_id });
-              upsertChat(chatId, event.session_id, localMessages);
+              saveChat(event.session_id, localMessages);
             } else if (event.type === "agent" && event.agent_id) {
               const respondingAgentId = event.agent_id;
               updateMessages((prev) => {
@@ -1391,7 +1647,7 @@ export default function App() {
               patchRun({ prompt: currentPrompt });
               // Start the history sync immediately rather than waiting for the
               // trailing done event; this makes a prompt durable once rendered.
-              upsertChat(chatId, currentSessionId ?? chatId, localMessages, currentPrompt);
+              saveChat(currentSessionId ?? chatId, localMessages, currentPrompt);
             } else if (event.type === "pause") {
               streamPaused = true;
               const rounds = event.rounds ?? 10;
@@ -1405,20 +1661,22 @@ export default function App() {
               patchMeta(() => ({ finishedAt: Date.now(), status: "error", error: errMsg }));
               // The stream ends after an error without a `done` event, so persist
               // the error into the chat record — otherwise reload shows empty history.
-              upsertChat(chatId, currentSessionId ?? chatId, localMessages);
+              streamEnded = true;
+              saveChat(currentSessionId ?? chatId, localMessages);
             } else if (event.type === "done") {
+              streamEnded = true;
               patchMeta(() => ({ finishedAt: Date.now(), status: "done" }));
               const msgs = streamPaused ? markLastPaused(localMessages) : localMessages;
-              upsertChat(chatId, currentSessionId!, msgs, currentPrompt);
-              // Generate an AI title after the very first exchange
+              saveChat(currentSessionId!, msgs, currentPrompt);
+              // Generate an AI title after the very first exchange (a quick chat gets one when it is saved as a chat)
               const userMsgs = msgs.filter((m) => m.role === "user" && !m.kind);
               const asstMsgs = msgs.filter((m) => m.role === "assistant");
-              if (!turnKind && !chatAgentId && userMsgs.length === 1) {
+              if (!turnKind && !chatAgentId && !quick && userMsgs.length === 1) {
                 // A message of only files is titled from their names.
                 const first = userMsgs[0];
                 const said =
                   first.content.trim() ||
-                  [...(first.attachments ?? []).map((a) => a.name), ...(first.references ?? []).map((r) => (r.type === "sop" ? r.title : r.name))].join(", ");
+                  [...(first.attachments ?? []).map((a) => a.name), ...(first.references ?? []).map(refLabel)].join(", ");
                 generateTitle(chatId, said, asstMsgs[asstMsgs.length - 1]?.content ?? "");
               }
             }
@@ -1427,18 +1685,23 @@ export default function App() {
           }
         }
       }
+      // Closed without `done` or `error` (and not by a prompt, which saves itself): keep what streamed.
+      if (!streamEnded && !hadPrompt && !deletedChatIdsRef.current.has(chatId) && localMessages.length > 0) {
+        patchMeta(() => ({ finishedAt: Date.now(), status: streamPaused ? "done" : "stopped" }));
+        saveChat(currentSessionId ?? chatId, streamPaused ? markLastPaused(localMessages) : localMessages, currentPrompt);
+      }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         aborted = true;
         patchMeta(() => ({ finishedAt: Date.now(), status: "stopped" }));
         // Persist whatever was streamed before the user hit stop
         if (!deletedChatIdsRef.current.has(chatId) && localMessages.length > 0 && currentSessionId) {
-          upsertChat(chatId, currentSessionId, localMessages);
+          saveChat(currentSessionId, localMessages);
         }
       } else {
         const errMsg = err instanceof Error ? err.message : String(err);
         patchMeta(() => ({ finishedAt: Date.now(), status: "error", error: errMsg }));
-        upsertChat(chatId, currentSessionId ?? chatId, localMessages);
+        saveChat(currentSessionId ?? chatId, localMessages);
       }
     } finally {
       const owned = runsRef.current.get(chatId);
@@ -1449,7 +1712,7 @@ export default function App() {
         commitRuns();
       }
       const deleted = deletedChatIdsRef.current.has(chatId);
-      if (!aborted && !deleted && !isOnScreen(chatId)) {
+      if (!aborted && !deleted && !quick && !isOnScreen(chatId)) {
         setChats((prev) => prev.map((c) => (c.id === chatId && !c.unread ? { ...c, unread: true } : c)));
       }
       // Drain this chat's queue only; other chats drain when their own runs finish.
@@ -1458,8 +1721,9 @@ export default function App() {
         updateQueue((q) => q.filter((m) => m !== next));
         const baseMessages = streamPaused ? markLastPaused(localMessages) : localMessages;
         void sendMessage(next.text, { chatId, sessionId: currentSessionId, baseMessages, model: next.model }, undefined, undefined, next.attachments, next.references);
-      } else if (!aborted && !deleted) {
+      } else if (!aborted && !deleted && !quick) {
         // Once per run (after any agent hand-offs), from the tab that ran it; a queued follow-up notifies when it ends.
+        // Not for the quick chat, which has no chat to open from a notification.
         void notifyRunEnd({
           chatId,
           title: (chatAgentId ? agentById.get(chatAgentId)?.name : undefined) ?? chatsRef.current.find((c) => c.id === chatId)?.title,
@@ -1472,23 +1736,24 @@ export default function App() {
   }
 
   // Retry and edit: drop the user message at `index` and everything after it, then send `text` in its place.
-  function resubmitFrom(index: number, text: string) {
+  function resubmitFrom(index: number, text: string, target: ChatTarget = mainTarget) {
+    const { chatId, messages } = target;
     const trimmed = text.trim();
     // The edited (or retried) message keeps the files it was sent with.
-    const files = displayMessages[index]?.attachments ?? [];
-    const refs = displayMessages[index]?.references ?? [];
+    const files = messages[index]?.attachments ?? [];
+    const refs = messages[index]?.references ?? [];
     // runsRef is set synchronously by sendMessage, so it also blocks a same-frame double click.
     if (
-      (!trimmed && files.length === 0 && refs.length === 0) || !activeChatId || runsRef.current.get(activeChatId)?.running ||
-      messageQueueRef.current.some((m) => m.chatId === activeChatId)
+      (!trimmed && files.length === 0 && refs.length === 0) || !chatId || runsRef.current.get(chatId)?.running ||
+      messageQueueRef.current.some((m) => m.chatId === chatId)
     ) return;
-    if (displayMessages[index]?.role !== "user" || displayMessages[index].kind) return;
+    if (messages[index]?.role !== "user" || messages[index].kind) return;
     void sendMessage(
       trimmed,
       {
-        chatId: activeChatId,
-        sessionId: displaySessionId || undefined,
-        baseMessages: displayMessages.slice(0, index),
+        chatId,
+        sessionId: target.sessionId,
+        baseMessages: messages.slice(0, index),
         model: selectedModelRef.current,
       },
       index,
@@ -1498,41 +1763,47 @@ export default function App() {
     );
   }
 
-  function answerPrompt(answer: string) {
-    const kind = visiblePrompt && isPermissionPrompt(visiblePrompt) ? "approval" : "answer";
-    dismissPrompt();
-    void sendMessage(answer, undefined, undefined, kind);
+  function answerPrompt(answer: string, target: ChatTarget = mainTarget) {
+    const kind = target.prompt && isPermissionPrompt(target.prompt) ? "approval" : "answer";
+    dismissPrompt(target.chatId);
+    void sendMessage(answer, undefined, undefined, kind, undefined, undefined, target);
   }
 
   // The agent's question is answered (by a pick or by the next message): hide it.
-  function dismissPrompt() {
-    if (activeChatId) {
-      const chatId = activeChatId;
-      const run = runsRef.current.get(chatId);
-      if (run) {
-        runsRef.current.set(chatId, { ...run, prompt: null });
-        commitRuns();
-      }
-      setChats((prev) => prev.map((chat) =>
-        chat.id === chatId ? { ...chat, pendingPrompt: undefined } : chat
-      ));
+  function dismissPrompt(chatId = activeChatId) {
+    if (!chatId) return;
+    const run = runsRef.current.get(chatId);
+    if (run) {
+      runsRef.current.set(chatId, { ...run, prompt: null });
+      commitRuns();
     }
+    if (chatId === QUICK_CHAT_ID) {
+      setQuickChat((q) => (q.prompt ? { ...q, prompt: undefined } : q));
+      return;
+    }
+    setChats((prev) => prev.map((chat) =>
+      chat.id === chatId ? { ...chat, pendingPrompt: undefined } : chat
+    ));
   }
 
   // While the agent waits on a question, the composer answers it; a permission prompt reads a typed reply as a denial.
-  const composerPrompt = !loading && visiblePrompt ? (isPermissionPrompt(visiblePrompt) ? "approval" : "question") : undefined;
-  function sendFromComposer() {
-    const text = input.trim();
-    if (composerPrompt !== "question" || !text) return void sendMessage();
+  const promptPendingFor = (target: ChatTarget) =>
+    !target.loading && target.prompt ? (isPermissionPrompt(target.prompt) ? "approval" as const : "question" as const) : undefined;
+  const composerPrompt = promptPendingFor(mainTarget);
+  function sendFromComposer(target: ChatTarget = mainTarget) {
+    const { draftKey } = target;
+    const text = (drafts[draftKey] ?? "").trim();
+    if (promptPendingFor(target) !== "question" || !text) return void sendMessage(undefined, undefined, undefined, undefined, undefined, undefined, target);
     // With files or SOPs/tools picked, the reply is a full message (it still answers the question):
     // an inline answer can't carry them.
-    if (draftFiles.length > 0 || draftRefs.length > 0) {
-      if (draftFiles.some((a) => a.status === "uploading")) return;
-      dismissPrompt();
-      return void sendMessage();
+    const files = fileDrafts[draftKey] ?? [];
+    if (files.length > 0 || (refDrafts[draftKey] ?? []).length > 0) {
+      if (files.some((a) => a.status === "uploading")) return;
+      dismissPrompt(target.chatId);
+      return void sendMessage(undefined, undefined, undefined, undefined, undefined, undefined, target);
     }
     setDraft(draftKey, "");
-    answerPrompt(text);
+    answerPrompt(text, target);
   }
 
   return (
@@ -1551,7 +1822,9 @@ export default function App() {
           envKey={pickerEnvKey}
           onEnvChange={changeEnv}
           onNewChat={fromDrawer(() => { startNewChat(); setActivePanel("chat"); })}
-          onClose={() => (isMobile ? closeDrawer() : setSidebarOpen(false))}
+          onClose={() => (isMobile ? closeDrawer() : collapseSidebar())}
+          motion={isMobile ? null : sidebarMotion}
+          onMotionEnd={endSidebarMotion}
           onSwitch={fromDrawer(switchToChat)}
           onOpenSearch={fromDrawer(() => setSearchOpen(true))}
           chatsLoading={!chatsHydrated}
@@ -1562,6 +1835,7 @@ export default function App() {
           onOpenMemory={fromDrawer(() => openPage(PANEL_PATHS.memory))}
           onOpenAgents={fromDrawer(() => openPage(PANEL_PATHS.agents))}
           onOpenSettings={fromDrawer(() => openPage(settingsPath(settingsTab)))}
+          onOpenChat={fromDrawer((chatId: string, title: string) => void openChatById(chatId, title))}
           activePanel={activePanel === "chat" && !activeChatId && !blankChat ? "home" : activePanel}
           drawer={isMobile ? { open: drawerOpen } : undefined}
         />
@@ -1598,6 +1872,26 @@ export default function App() {
             chats={chats}
             onCreateFolder={chatFolders.createFolder}
             onMoveChats={chatFolders.moveChats}
+          />
+        ) : activeChat && KindView ? (
+          <KindView
+            key={activeChat.id}
+            chat={activeChat}
+            onNewChat={startNewChat}
+            composer={{
+              input,
+              onInput: setInput,
+              attachments: draftFiles,
+              onAddFiles: (files) => addFiles(draftKey, files),
+              onRemoveAttachment: (key) => removeFile(draftKey, key),
+              clearAttachments: () => updateFiles(draftKey, (items) => {
+                for (const a of items) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+                return [];
+              }),
+              references: draftRefs,
+              onRemoveReference: (key) => removeRef(draftKey, key),
+              clearReferences: () => updateRefs(draftKey, () => []),
+            }}
           />
         ) : (
           <>
@@ -1672,6 +1966,7 @@ export default function App() {
         <MessageList
           messages={displayMessages}
           chatId={activeChatId}
+          enableQuoteActions
           focusMessage={focusMessage && focusMessage.chatId === activeChatId ? focusMessage : undefined}
           sessionId={displaySessionId ?? ""}
           loading={loading}
@@ -1680,9 +1975,9 @@ export default function App() {
           onOpenArtifact={(id, version) => artifactsControl?.openFile(id, version)}
           onContinue={() => sendMessage("continue", undefined, undefined, "continue")}
           canResubmit={!loading && activeQueue.length === 0}
-          onResubmit={resubmitFrom}
+          onResubmit={(index, text) => resubmitFrom(index, text)}
           pendingPrompt={visiblePrompt ?? undefined}
-          onPromptAnswer={answerPrompt}
+          onPromptAnswer={(answer) => answerPrompt(answer)}
         />
         </ArtifactsPanelContext.Provider>
         </div>
@@ -1711,7 +2006,7 @@ export default function App() {
             else startNewChat();
           }}
           onInput={setInput}
-          onSend={sendFromComposer}
+          onSend={() => sendFromComposer()}
           promptPending={composerPrompt}
           attachments={draftFiles}
           onAddFiles={(files) => addFiles(draftKey, files)}
@@ -1747,7 +2042,7 @@ export default function App() {
           }}
         />
       )}
-      {artifactsPanel && activePanel === "chat" && artifactsPanel.sessionId === displaySessionId && (
+      {artifactsPanel && activePanel === "chat" && !KindView && artifactsPanel.sessionId === displaySessionId && (
         <ArtifactsPanel
           key={artifactsPanel.sessionId ?? "no-session"}
           sessionId={artifactsPanel.sessionId}
@@ -1768,6 +2063,76 @@ export default function App() {
         onDismiss={() => chatFolders.suggestion && chatFolders.resolveSuggestion(chatFolders.suggestion, false)}
       />
       <NotificationNudge />
+      {/* The quick chat: the same message list, composer and sendMessage as the chat above, in a floating card.
+          After .main, so `.chat-input` lookups for the main composer still find that one first. */}
+      {quickOpen && (
+        <QuickChat
+          replyModel={[...quickTarget.messages].reverse().find((m) => m.role === "assistant" && m.meta?.model)?.meta?.model}
+          canNew={quickTarget.messages.length > 0 || Boolean(quickRun)}
+          canSave={Boolean(quickTarget.sessionId) && !quickTarget.loading && quickTarget.messages.length > 0}
+          onNew={() => {
+            clearQuickChat();
+            focusQuickChatComposer();
+          }}
+          onSave={saveQuickChat}
+          onClose={() => setQuickOpen(false)}
+        >
+          <div className="quick-chat-body">
+            {quickTarget.messages.length === 0 ? (
+              <div className="quick-chat-empty">
+                <p>Ask something quick. It isn't kept unless you save it as a chat.</p>
+              </div>
+            ) : (
+              <MessageList
+                key={quickEpoch}
+                messages={quickTarget.messages}
+                chatId={QUICK_CHAT_ID}
+                sessionId={quickTarget.sessionId ?? ""}
+                loading={quickTarget.loading}
+                isViewingInflight={Boolean(quickRun)}
+                onNewChat={startNewChat}
+                onOpenArtifact={downloadQuickArtifact}
+                onContinue={() => void sendMessage("continue", undefined, undefined, "continue", undefined, undefined, quickTarget)}
+                canResubmit={!quickTarget.loading && quickQueue.length === 0}
+                onResubmit={(index, text) => resubmitFrom(index, text, quickTarget)}
+                pendingPrompt={quickTarget.prompt ?? undefined}
+                onPromptAnswer={(answer) => answerPrompt(answer, quickTarget)}
+              />
+            )}
+          </div>
+          <MessageInput
+            variant="compact"
+            hideModelPicker
+            input={drafts[QUICK_CHAT_ID] ?? ""}
+            loading={quickTarget.loading}
+            isViewingInflight={Boolean(quickRun)}
+            queued={quickQueue.map((m) => m.text)}
+            onEditQueued={(i) => {
+              const item = quickQueue[i];
+              if (!item) return;
+              updateQueue((q) => q.filter((m) => m !== item));
+              const cur = drafts[QUICK_CHAT_ID] ?? "";
+              setDraft(QUICK_CHAT_ID, cur.trim() ? `${item.text}\n\n${cur}` : item.text);
+              focusQuickChatComposer();
+            }}
+            onRemoveQueued={(i) => {
+              const item = quickQueue[i];
+              if (item) updateQueue((q) => q.filter((m) => m !== item));
+            }}
+            onStop={() => runsRef.current.get(QUICK_CHAT_ID)?.controller.abort()}
+            onInput={(text) => setDraft(QUICK_CHAT_ID, text)}
+            onSend={() => sendFromComposer(quickTarget)}
+            promptPending={promptPendingFor(quickTarget)}
+            attachments={fileDrafts[QUICK_CHAT_ID] ?? []}
+            onAddFiles={(files) => addFiles(QUICK_CHAT_ID, files)}
+            onRemoveAttachment={(key) => removeFile(QUICK_CHAT_ID, key)}
+            references={refDrafts[QUICK_CHAT_ID] ?? []}
+            onAddReference={(ref) => addRef(QUICK_CHAT_ID, ref)}
+            onRemoveReference={(key) => removeRef(QUICK_CHAT_ID, key)}
+            placeholder={quickTarget.loading || quickTarget.prompt ? undefined : "Ask a quick question…"}
+          />
+        </QuickChat>
+      )}
     </div>
     </SidebarControlContext.Provider>
   );

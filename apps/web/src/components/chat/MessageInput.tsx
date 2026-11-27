@@ -11,8 +11,8 @@ import AttachMenu from "./AttachMenu";
 import AttachmentChips from "./AttachmentChips";
 
 interface Props {
-  /** "hero" renders the larger, centered composer used on an empty chat. */
-  variant?: "dock" | "hero";
+  /** "hero" renders the larger, centered composer used on an empty chat; "compact" fits a small card (the quick chat). */
+  variant?: "dock" | "hero" | "compact";
   input: string;
   loading: boolean;
   isViewingInflight: boolean;
@@ -21,7 +21,10 @@ interface Props {
   onRemoveQueued?: (index: number) => void;
   onStop: () => void;
   currentModel?: string;
-  onModelChange: (model: string) => void;
+  /** Needed for the model/agent picker; left out (or with `hideModelPicker`) there is none. */
+  onModelChange?: (model: string) => void;
+  /** No model/agent picker: the chat's model is fixed (the quick chat runs on the low tier). */
+  hideModelPicker?: boolean;
   activeAgentId?: string;
   onSelectAgent?: (agent: AgentRecord | null) => void;
   onInput: (value: string) => void;
@@ -36,6 +39,10 @@ interface Props {
   references?: ContextRef[];
   onAddReference?: (ref: ContextRef) => void;
   onRemoveReference?: (key: string) => void;
+  /** Shown in place of the model picker (a code chat shows its engine and model, which it can't change). */
+  modelSlot?: React.ReactNode;
+  /** Replaces the default placeholder. */
+  placeholder?: string;
 }
 
 export default function MessageInput({
@@ -49,6 +56,7 @@ export default function MessageInput({
   onStop,
   currentModel,
   onModelChange,
+  hideModelPicker = false,
   activeAgentId,
   onSelectAgent,
   onInput,
@@ -60,6 +68,8 @@ export default function MessageInput({
   references = [],
   onAddReference,
   onRemoveReference,
+  modelSlot,
+  placeholder: placeholderOverride,
 }: Props) {
   const uploading = attachments.some((a) => a.status === "uploading");
   const ready = attachments.some((a) => a.status === "ready") || references.length > 0;
@@ -81,8 +91,8 @@ export default function MessageInput({
     onSend();
   };
 
-  const placeholder =
-    loading && isViewingInflight
+  const placeholder = placeholderOverride ??
+    (loading && isViewingInflight
       ? "Type to queue a message…"
       : promptPending === "question"
         ? "Type your answer to Rye's question…"
@@ -90,10 +100,10 @@ export default function MessageInput({
           ? "Reply to decline and tell Rye what to do instead…"
           : variant === "hero"
             ? "Describe the incident, paste an error, or ask a question…"
-            : "Describe the incident or ask a question...";
+            : "Describe the incident or ask a question...");
 
   return (
-    <div className={`input-bar-wrap${variant === "hero" ? " input-bar-wrap--hero" : ""}`}>
+    <div className={`input-bar-wrap${variant === "dock" ? "" : ` input-bar-wrap--${variant}`}`}>
       <div className="input-bar">
         {queued.length > 0 && (
           <ul className="queued-list" aria-label="Queued messages">
@@ -153,12 +163,14 @@ export default function MessageInput({
           />
           <div className="input-box-actions">
             <div className="input-box-actions-left">
-              <ModelSelect
-                value={currentModel}
-                onChange={onModelChange}
-                activeAgentId={activeAgentId}
-                onSelectAgent={onSelectAgent}
-              />
+              {modelSlot ?? (!hideModelPicker && onModelChange && (
+                <ModelSelect
+                  value={currentModel}
+                  onChange={onModelChange}
+                  activeAgentId={activeAgentId}
+                  onSelectAgent={onSelectAgent}
+                />
+              ))}
               {onAddFiles && <AttachMenu onFiles={onAddFiles} onRef={onAddReference} picked={references} />}
             </div>
             <div className="input-box-actions-right">

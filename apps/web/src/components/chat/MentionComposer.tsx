@@ -153,6 +153,59 @@ function placeCaretAfter(node: Node) {
   sel.addRange(range);
 }
 
+/** Put the caret after a pill and the character that follows it (adding that character if it's missing). */
+function placeCaretAfterPill(pill: HTMLElement, trailingChar: string) {
+  const sel = window.getSelection();
+  if (!sel) return;
+  let next = pill.nextSibling;
+  const hasTrailing =
+    !trailingChar ||
+    (next?.nodeType === Node.TEXT_NODE && (next.textContent ?? "").replace(/[^\S\r\n]/g, " ").startsWith(trailingChar)); // any space, incl. no-break
+  if (!hasTrailing) {
+    next = document.createTextNode(trailingChar);
+    pill.after(next);
+  }
+  const range = document.createRange();
+  if (trailingChar && next) range.setStart(next, trailingChar.length);
+  else range.setStartAfter(pill);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/** The pills directly before and after a collapsed caret inside `root` (null when there's none). */
+function pillsBesideCaret(root: HTMLElement): { before: HTMLElement | null; after: HTMLElement | null } {
+  const none = { before: null, after: null };
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return none;
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.startContainer)) return none;
+  const { startContainer: node, startOffset: offset } = range;
+  let before: Node | null = null;
+  let after: Node | null = null;
+  if (node.nodeType === Node.TEXT_NODE) {
+    const length = (node.textContent ?? "").length;
+    if (offset === 0 || (node.textContent ?? "").replace(/\p{Cf}/gu, "") === "") before = node.previousSibling;
+    if (offset >= length) after = node.nextSibling;
+  } else {
+    before = node.childNodes[offset - 1] ?? null;
+    after = node.childNodes[offset] ?? null;
+  }
+  return { before: isMentionPill(before) ? before : null, after: isMentionPill(after) ? after : null };
+}
+
+/** Collapse the caret just before or just after a node. */
+function placeCaretBeside(node: Node, side: "before" | "after") {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  if (side === "before") range.setStartBefore(node);
+  else range.setStartAfter(node);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 /*
  * Edits made by changing the DOM directly never reach the browser's undo history, so a later
  * Cmd/Ctrl+Z replays its own steps against text that has moved and scrambles the draft. Every edit
@@ -264,6 +317,41 @@ export default function MentionComposer({
     setActiveQuery(null);
   }, [value, agentBySlug]);
 
+  /*
+   * Arrowing through a tag takes three steps: the caret beside it, then "in" it (the tag ringed, the
+   * caret hidden: the ring is the caret), then out the other side; the opposite arrow backs out the way
+   * it came. In it, Backspace/Delete removes the tag. The caret itself stays beside the tag meanwhile;
+   * the step is remembered here and dropped as soon as the caret moves anywhere else.
+   */
+  const focusedPillRef = useRef<HTMLElement | null>(null);
+  const focusPill = useCallback((pill: HTMLElement | null) => {
+    const el = editorRef.current;
+    const previous = focusedPillRef.current;
+    if (previous && previous !== pill) previous.classList.remove("is-caret");
+    focusedPillRef.current = pill;
+    pill?.classList.add("is-caret");
+    el?.classList.toggle("has-caret-pill", Boolean(pill));
+  }, []);
+
+  useEffect(() => {
+    const update = () => {
+      const el = editorRef.current;
+      const pill = focusedPillRef.current;
+      if (!el || !pill) return;
+      const beside = pillsBesideCaret(el);
+      const stillThere =
+        document.activeElement === el && el.contains(pill) && (beside.before === pill || beside.after === pill);
+      if (!stillThere) focusPill(null);
+    };
+    document.addEventListener("selectionchange", update);
+    const el = editorRef.current;
+    el?.addEventListener("blur", update);
+    return () => {
+      document.removeEventListener("selectionchange", update);
+      el?.removeEventListener("blur", update);
+    };
+  }, [focusPill]);
+
   const emitChange = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
@@ -301,9 +389,18 @@ export default function MentionComposer({
         current.removeAllRanges();
         current.addRange(typed);
         const replacement = document.createDocumentFragment();
-        replacement.appendChild(createMentionPillNode(agent));
+        const marked = createMentionPillNode(agent);
+        marked.dataset.mentionNew = "1";
+        replacement.appendChild(marked);
         replacement.appendChild(document.createTextNode(trailingChar));
         if (insertHtmlUndoable(fragmentHtml(replacement))) {
+          // insertHTML may drop the trailing space and can leave the caret before the uneditable pill,
+          // so put the caret after the pill and its space ourselves.
+          const inserted = editorRef.current?.querySelector<HTMLElement>("[data-mention-new]");
+          if (inserted) {
+            delete inserted.dataset.mentionNew;
+            placeCaretAfterPill(inserted, trailingChar);
+          }
           setActiveQuery(null);
           setMentionIndex(0);
           setDismissed(false);
@@ -390,6 +487,39 @@ export default function MentionComposer({
       if (e.key === "Escape") {
         e.preventDefault();
         setDismissed(true);
+        return;
+      }
+    }
+
+    // Stepping into and out of a tag with the arrows (see focusPill).
+    const plainKey = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey;
+    const focused = focusedPillRef.current;
+    if (focused && plainKey) {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        focusPill(null);
+        placeCaretBeside(focused, e.key === "ArrowLeft" ? "before" : "after");
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        const after = focused.nextSibling;
+        focusPill(null);
+        focused.remove();
+        if (after) placeCaretBeside(after, "before");
+        emitChange();
+        refreshQuery();
+        return;
+      }
+    }
+    if (focused && e.key !== "Shift") focusPill(null);
+    if (!focused && plainKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      const el = editorRef.current;
+      const beside = el ? pillsBesideCaret(el) : { before: null, after: null };
+      const next = e.key === "ArrowRight" ? beside.after : beside.before;
+      if (next) {
+        e.preventDefault();
+        focusPill(next);
         return;
       }
     }

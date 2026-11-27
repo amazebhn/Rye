@@ -21,11 +21,17 @@ import {
   Plus,
   Search,
   Settings as SettingsIcon,
+  Shapes,
   X,
 } from "lucide-react";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+import type { ChatKind } from "@rye/shared";
 import type { ChatFolder, ChatRecord } from "../../utils/types";
+import { kindClient, kindOf, useAvailableKinds, useCreatableKinds, type ChatKindClient } from "../../chat/kinds";
+import { openAppPath } from "../../utils/routes";
+import { useCodeSessionList } from "../../utils/codeApi";
+import { ACTIVITY_LABEL } from "../code/codeFormat";
 import { useAgents } from "../../contexts/AgentContext";
 import AgentAvatar from "../agents/AgentAvatar";
 import AgentHoverCard from "../agents/AgentHoverCard";
@@ -35,7 +41,7 @@ import Modal, { ModalCancelButton } from "../shared/Modal";
 
 // Every spinner shares the document timeline's origin as its start time, so all of them rotate in phase.
 // Re-applied on every render: reordering the chat list re-inserts the node, which restarts its CSS animation.
-function WorkingSpinner() {
+function WorkingSpinner({ label = "Working" }: { label?: string }) {
   const ref = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
     ref.current?.getAnimations().forEach((animation) => {
@@ -47,7 +53,8 @@ function WorkingSpinner() {
       ref={ref}
       className="sidebar-working"
       role="img"
-      aria-label="Working"
+      aria-label={label}
+      title={label === "Working" ? undefined : label}
       onAnimationStart={(e) => e.currentTarget.getAnimations().forEach((animation) => { animation.startTime = 0; })}
     />
   );
@@ -97,32 +104,78 @@ function dropdownBelow(trigger: HTMLElement) {
   return { top: rect.bottom + 6, left: Math.max(minLeft, Math.min(rect.right - MENU_WIDTH, maxLeft)) };
 }
 
-/** The Chats header's "+" button: a small menu to start a chat or make a folder. */
-function NewMenu({ onNewChat, onNewFolder }: {
+/** The Chats header's "+" button: a small menu to start a chat, make a folder, or create another kind of chat (Create ▸). */
+function NewMenu({ onNewChat, onNewFolder, createKinds = [], onCreateKind }: {
   onNewChat: () => void;
   /** Gets the trigger, so focus can go back to it when the folder dialog closes. */
   onNewFolder: (trigger: HTMLElement | null) => void;
+  /** Kinds that can be created, or set up, from here (`useCreatableKinds`); Create ▸ shows only when there are some. */
+  createKinds?: ChatKindClient[];
+  onCreateKind?: (kind: ChatKind, trigger: HTMLElement | null) => void;
 }) {
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  /** The Create ▸ list: beside the menu, or (no room on either side, a phone) a sheet over it. */
+  const [popout, setPopout] = useState<{ top: number; left: number; width: number; focus: boolean } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const popoutRef = useRef<HTMLDivElement>(null);
+  const createRef = useRef<HTMLButtonElement>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
   const open = position !== null;
 
   const close = (focusButton = false) => {
+    window.clearTimeout(closeTimer.current);
     setPosition(null);
+    setPopout(null);
     if (focusButton) buttonRef.current?.focus();
   };
+
+  const openPopout = (focus: boolean) => {
+    window.clearTimeout(closeTimer.current);
+    const menu = menuRef.current?.getBoundingClientRect();
+    const row = createRef.current?.getBoundingClientRect();
+    if (!menu || !row) return;
+    const gap = 4;
+    const width = MENU_WIDTH;
+    const fitsRight = menu.right + gap + width <= window.innerWidth - 8;
+    const fitsLeft = menu.left - gap - width >= 8;
+    const top = Math.max(8, Math.min(row.top - 5, window.innerHeight - 160));
+    const next = fitsRight || fitsLeft
+      ? { top, left: fitsRight ? menu.right + gap : menu.left - width - gap, width, focus }
+      : { top: Math.min(menu.bottom + 4, window.innerHeight - 8 - 48 * Math.max(1, createKinds.length)), left: 8, width: window.innerWidth - 16, focus };
+    setPopout((current) => (current && !focus ? current : next));
+  };
+
+  const scheduleClosePopout = () => {
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      if (popoutRef.current?.contains(document.activeElement)) return;
+      setPopout(null);
+    }, 220);
+  };
+
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
+
+  useEffect(() => {
+    if (popout?.focus) popoutRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [popout]);
 
   useEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) close();
+      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target) && !popoutRef.current?.contains(target)) close();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
+      // From the Create list, Escape goes back to its row first.
+      if (popoutRef.current?.contains(document.activeElement)) {
+        setPopout(null);
+        createRef.current?.focus();
+        return;
+      }
       close(true);
     };
     const onResize = () => close();
@@ -143,6 +196,11 @@ function NewMenu({ onNewChat, onNewFolder }: {
   const menuKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
     const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowRight" && document.activeElement === createRef.current) {
+      e.preventDefault();
+      openPopout(true);
+      return;
+    }
     let next: number;
     if (e.key === "ArrowDown") next = (at + 1) % items.length;
     else if (e.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
@@ -158,10 +216,28 @@ function NewMenu({ onNewChat, onNewFolder }: {
     }
     e.preventDefault();
     items[next]?.focus();
+    if (items[next] !== createRef.current) setPopout(null);
+  };
+
+  const popoutKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setPopout(null);
+      createRef.current?.focus();
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      close(true);
+    }
   };
 
   const run = (action: () => void) => {
     setPosition(null);
+    setPopout(null);
     action();
   };
 
@@ -199,6 +275,7 @@ function NewMenu({ onNewChat, onNewFolder }: {
           onMouseMove={(e) => {
             const item = (e.target as HTMLElement).closest<HTMLButtonElement>('[role="menuitem"]');
             if (item && item !== document.activeElement) item.focus();
+            if (item && item !== createRef.current && popout) setPopout(null);
           }}
         >
           <button type="button" className="sidebar-dropdown-item" role="menuitem" onClick={() => run(onNewChat)}>
@@ -214,6 +291,54 @@ function NewMenu({ onNewChat, onNewFolder }: {
             <FolderPlus size={17} aria-hidden="true" />
             <span>New folder…</span>
           </button>
+          {createKinds.length > 0 && onCreateKind && (
+            <button
+              ref={createRef}
+              type="button"
+              className="sidebar-dropdown-item"
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={popout !== null}
+              aria-controls={popout ? "sidebar-create-menu" : undefined}
+              onMouseEnter={() => openPopout(false)}
+              onMouseLeave={scheduleClosePopout}
+              onClick={() => openPopout(true)}
+            >
+              <Shapes size={17} aria-hidden="true" />
+              <span>Create</span>
+              <ChevronRight className="sidebar-dropdown-chevron" size={16} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
+      {position && popout && onCreateKind && (
+        <div
+          ref={popoutRef}
+          id="sidebar-create-menu"
+          className="sidebar-dropdown sidebar-new-menu sidebar-create-popout"
+          role="menu"
+          aria-label="Create"
+          style={{ top: popout.top, left: popout.left, width: popout.width }}
+          onKeyDown={popoutKeys}
+          onMouseEnter={() => window.clearTimeout(closeTimer.current)}
+          onMouseLeave={scheduleClosePopout}
+          onMouseMove={(e) => {
+            const item = (e.target as HTMLElement).closest<HTMLButtonElement>('[role="menuitem"]');
+            if (item && item !== document.activeElement) item.focus();
+          }}
+        >
+          {createKinds.map((kind) => (
+            <button
+              key={kind.id}
+              type="button"
+              className="sidebar-dropdown-item"
+              role="menuitem"
+              onClick={() => run(() => onCreateKind(kind.id, buttonRef.current))}
+            >
+              <kind.icon size={17} aria-hidden="true" />
+              <span>{kind.newMenuLabel}</span>
+            </button>
+          ))}
         </div>
       )}
     </>
@@ -255,6 +380,11 @@ interface Props {
   onOpenSettings: () => void;
   /** Phone width: the sidebar is a drawer over the content (App.tsx), open or slid away. */
   drawer?: { open: boolean };
+  /** A chat made from + ▸ Create (a code session…): open it, fetching the list first if needed. */
+  onOpenChat?: (chatId: string, title: string) => void;
+  /** Desktop: sliding in after being collapsed, or out before it unmounts (App waits for onMotionEnd). */
+  motion?: "in" | "out" | null;
+  onMotionEnd?: (motion: "in" | "out") => void;
 }
 
 export default function Sidebar({
@@ -282,9 +412,25 @@ export default function Sidebar({
   onOpenAgents,
   onOpenSettings,
   drawer,
+  onOpenChat,
+  motion = null,
+  onMotionEnd,
 }: Props) {
   // The nav items carry no counts (the user's call), so the sidebar doesn't load SOPs or memories.
   const { agentById } = useAgents();
+  // Chat kinds the server supports (chat/kinds.tsx): with only plain chats, no filter and no Create ▸.
+  const kinds = useAvailableKinds();
+  // Create ▸ also lists kinds that only need setting up; those open their setup dialog, which turns
+  // into the "New…" dialog as soon as the kind becomes available.
+  const createKinds = useCreatableKinds();
+  const [creatingKind, setCreatingKind] = useState<ChatKind | null>(null);
+  const createReturnFocusRef = useRef<HTMLElement | null>(null);
+  const creatingReady = creatingKind !== null && kinds.some((k) => k.id === creatingKind);
+  const CreateDialog = creatingKind && creatingReady ? kindClient(creatingKind)?.NewDialog : undefined;
+  const SetupDialog = creatingKind && !creatingReady ? kindClient(creatingKind)?.SetupDialog : undefined;
+  // Code sessions' live state, for the row indicators.
+  const codeSessions = useCodeSessionList();
+  const codeByChat = new Map(codeSessions.map((s) => [s.chatId, s]));
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -294,7 +440,7 @@ export default function Sidebar({
   const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
   const [folderModal, setFolderModal] = useState<FolderModal | null>(null);
   /** The chat waiting for "Delete chat" to be confirmed. */
-  const [confirmDeleteChat, setConfirmDeleteChat] = useState<{ id: string; title: string } | null>(null);
+  const [confirmDeleteChat, setConfirmDeleteChat] = useState<{ id: string; title: string; code?: boolean } | null>(null);
   const [folderName, setFolderName] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [folderBusy, setFolderBusy] = useState(false);
@@ -469,9 +615,15 @@ export default function Sidebar({
 
   function renderChat(chat: ChatRecord) {
     const isActive = chat.id === activeChatId;
-    const isRunning = runningChatIds.has(chat.id);
+    // A code chat (when the server has code sessions) shows its kind's icon and its session's state.
+    const kind = kindOf(chat);
+    const KindIcon = kind !== "chat" && kinds.some((k) => k.id === kind) ? kindClient(kind)?.icon : undefined;
+    const activity = kind === "code" ? codeByChat.get(chat.id)?.activity : undefined;
+    const isRunning = runningChatIds.has(chat.id) || activity === "running";
     // The agent asked a question or needs an approval and is waiting on the user.
-    const isWaiting = Boolean(chat.pendingPrompt) && !isRunning;
+    const isWaiting = (Boolean(chat.pendingPrompt) && !isRunning) || activity === "needs_approval";
+    const isReady = activity === "ready" && !isActive;
+    const isFailed = activity === "error";
     const menuOpen = openMenuId === chat.id;
     const currentFolderId = chat.folderId && folders.some((f) => f.id === chat.folderId) ? chat.folderId : undefined;
     const chatAgent = chat.agentId ? agentById.get(chat.agentId) : undefined;
@@ -495,13 +647,32 @@ export default function Sidebar({
             </AgentHoverCard>
           </span>
         )}
-        <span className="sidebar-item-title">{chatAgent ? chatAgent.name : chat.title}</span>
-        {(isRunning || chat.unread || isWaiting) && (
+        {!chatAgent && KindIcon && (
+          <span className="sidebar-kind-icon" aria-hidden="true">
+            <KindIcon size={16} />
+          </span>
+        )}
+        <span className="sidebar-item-title">
+          {KindIcon && <span className="attach-sr-only">{kindClient(kind)?.label}: </span>}
+          {chatAgent ? chatAgent.name : chat.title}
+        </span>
+        {(isRunning || chat.unread || isWaiting || isReady || isFailed) && (
           <span className="sidebar-item-indicators">
-            {isRunning && <WorkingSpinner />}
-            {isWaiting
-              ? <span className="sidebar-unread sidebar-waiting" role="img" aria-label="Waiting for you" title="Waiting for you" />
-              : chat.unread && <span className="sidebar-unread" role="img" aria-label="Unread" />}
+            {isRunning && !isWaiting && <WorkingSpinner label={activity ? ACTIVITY_LABEL.running : "Working"} />}
+            {isWaiting ? (
+              <span
+                className="sidebar-unread sidebar-waiting"
+                role="img"
+                aria-label={activity === "needs_approval" ? ACTIVITY_LABEL.needs_approval : "Waiting for you"}
+                title={activity === "needs_approval" ? ACTIVITY_LABEL.needs_approval : "Waiting for you"}
+              />
+            ) : isFailed ? (
+              <span className="sidebar-unread sidebar-failed" role="img" aria-label={ACTIVITY_LABEL.error} title={ACTIVITY_LABEL.error} />
+            ) : isReady && !isRunning ? (
+              <span className="sidebar-unread sidebar-ready" role="img" aria-label={ACTIVITY_LABEL.ready} title={ACTIVITY_LABEL.ready} />
+            ) : (
+              chat.unread && <span className="sidebar-unread" role="img" aria-label="Unread" />
+            )}
           </span>
         )}
         <div
@@ -589,7 +760,7 @@ export default function Sidebar({
                     e.stopPropagation();
                     closeMenus();
                     // Deleting can't be undone, so ask first.
-                    setConfirmDeleteChat({ id: chat.id, title: chatAgent?.name ?? chat.title });
+                    setConfirmDeleteChat({ id: chat.id, title: chatAgent?.name ?? chat.title, ...(KindIcon && kind === "code" ? { code: true } : {}) });
                   }}
                 >
                   <Trash2 size={17} />
@@ -646,7 +817,12 @@ export default function Sidebar({
 
   return (
     <div
-      className={`sidebar${drawer ? ` sidebar--drawer${drawer.open ? " is-open" : ""}` : ""}`}
+      className={`sidebar${drawer ? ` sidebar--drawer${drawer.open ? " is-open" : ""}` : ""}${
+        !drawer && motion === "in" ? " is-entering" : ""
+      }${!drawer && motion === "out" ? " is-leaving" : ""}`}
+      onAnimationEnd={(e) => {
+        if (e.target === e.currentTarget && motion) onMotionEnd?.(motion);
+      }}
       id="app-sidebar"
       role={drawer ? "dialog" : undefined}
       aria-modal={drawer ? true : undefined}
@@ -731,6 +907,12 @@ export default function Sidebar({
               onNewFolder={(trigger) => {
                 folderReturnFocusRef.current = trigger;
                 openFolderModal({ kind: "create" });
+              }}
+              createKinds={createKinds}
+              onCreateKind={(kind, trigger) => {
+                closeMenus();
+                createReturnFocusRef.current = trigger;
+                setCreatingKind(kind);
               }}
             />
           </span>
@@ -879,10 +1061,46 @@ export default function Sidebar({
         </Modal>
       )}
 
+      {CreateDialog && (
+        <CreateDialog
+          onClose={() => {
+            setCreatingKind(null);
+            createReturnFocusRef.current?.focus();
+            createReturnFocusRef.current = null;
+          }}
+          onCreated={(chatId, title) => {
+            setCreatingKind(null);
+            createReturnFocusRef.current = null;
+            onOpenChat?.(chatId, title);
+          }}
+        />
+      )}
+
+      {SetupDialog && (
+        <SetupDialog
+          onClose={() => {
+            setCreatingKind(null);
+            createReturnFocusRef.current?.focus();
+            createReturnFocusRef.current = null;
+          }}
+          onOpenPage={(path) => {
+            setCreatingKind(null);
+            createReturnFocusRef.current = null;
+            openAppPath(path);
+            // A page chosen from the phone drawer closes it, as the nav items do.
+            if (drawer?.open) onClose();
+          }}
+        />
+      )}
+
       {confirmDeleteChat && (
         <Modal
           title={`Delete “${confirmDeleteChat.title.length > 60 ? `${confirmDeleteChat.title.slice(0, 60)}…` : confirmDeleteChat.title}”?`}
-          description="The chat and all its messages are deleted. This can't be undone."
+          description={
+            confirmDeleteChat.code
+              ? "The chat is deleted and its code session is archived: its snapshots stay, so it can be restored from Settings → Code. Branches you created are kept."
+              : "The chat and all its messages are deleted. This can't be undone."
+          }
           className="sidebar-rename-modal modal--compact"
           onClose={() => setConfirmDeleteChat(null)}
           footer={

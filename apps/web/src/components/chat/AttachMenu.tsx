@@ -288,7 +288,8 @@ export default function AttachMenu({
 }
 
 interface Option {
-  ref: ContextRef;
+  /** An SOP or a tool (quotes come from text selections, not from this menu). */
+  ref: Exclude<ContextRef, { type: "quote" }>;
   label: string;
   /** A tool's code name, shown small after its title. */
   sub?: string;

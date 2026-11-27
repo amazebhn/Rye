@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 // Cross-tab sync: tabs announce server-side changes over a BroadcastChannel and
 // refetch on focus, so other tabs stay current without a reload.
 
-export type SyncTopic = "chats" | "sops" | "skills" | "memory" | "agents" | "env" | "settings" | "profile" | "usage" | "artifacts";
+export type SyncTopic = "chats" | "sops" | "skills" | "memory" | "agents" | "env" | "settings" | "profile" | "usage" | "artifacts" | "code";
 
 export type SyncMessage =
   | { kind: "changed"; topic: SyncTopic }
@@ -67,6 +67,7 @@ const MUTATION_TOPICS: [RegExp, SyncTopic][] = [
   [/^\/profile(\/|$)/, "profile"],
   [/^\/usage\//, "usage"],
   [/^\/result\/[^/]+\/save$/, "artifacts"],
+  [/^\/code\//, "code"],
 ];
 
 /** Announces every successful API mutation, so each call site doesn't have to. */

@@ -14,13 +14,14 @@
  * The SDK session holds the real transcript. When a call can't continue a live
  * session (new process, idle timeout, changed system prompt, edited history) a
  * new one starts from Rye's saved history rendered as text.
+ *
+ * The input channel, the MCP bridge and the SDK message readers are shared with the code engine
+ * (`code/engines/claude.ts`) in `harness/claude-events.ts`.
  */
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { query as sdkQuery, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { query as sdkQuery, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   createAssistantMessageEventStream,
   getCurrentSystemPrompt,
@@ -41,6 +42,33 @@ import {
   type Usage,
   type UserMessage,
 } from "@earendil-works/pi-ai";
+import {
+  BUILTIN_RESULT_CHARS,
+  InputChannel,
+  RYE_MCP_SERVER,
+  RYE_TOOL_PREFIX,
+  RyeMcpBridge,
+  StderrTail,
+  ToolUseBlocks,
+  assistantErrorText,
+  clip,
+  deferred,
+  resultErrorDetail,
+  sdkUserMessage,
+  toolResultBlocks,
+  toolResultText,
+  type AnthropicUsage,
+  type Deferred,
+  type HarnessToolEvent,
+  type QueryFn,
+  type RyeMcpCall,
+  type StreamEvent,
+  type ToolOutcome,
+  type UserBlock,
+} from "./claude-events.js";
+import { claudeEnv } from "./env.js";
+
+export { isHarnessToolEvent, type HarnessToolEvent } from "./claude-events.js";
 
 export const CLAUDE_SDK_API = "claude-agent-sdk";
 /** Model aliases the SDK always accepts; the live list comes from claudeHarnessInfo(). */
@@ -49,17 +77,12 @@ export const CLAUDE_MODEL_ALIASES = ["sonnet", "opus", "haiku"];
 /** Claude Code's own web tools. The SDK runs these itself; they never pass through Rye's loop. */
 export const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
 
-const MCP_SERVER = "rye";
-const TOOL_PREFIX = `mcp__${MCP_SERVER}__`;
-// Rye enforces its own tool timeouts and may wait on the user, so the SDK's limit only bounds leaks.
-const SDK_TOOL_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const MCP_SERVER = RYE_MCP_SERVER;
+const TOOL_PREFIX = RYE_TOOL_PREFIX;
 const SESSION_IDLE_MS = 15 * 60 * 1000;
-const TOOL_LIST_WAIT_MS = 3000;
 const HISTORY_RESULT_CHARS = 4000;
 const HISTORY_ARGS_CHARS = 500;
 const HISTORY_MAX_CHARS = 300_000;
-
-type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
 export interface ClaudeSdkDeps {
   /** Replaces the SDK's query() in tests. */
@@ -70,57 +93,10 @@ export interface ClaudeSdkDeps {
   builtinTools?: () => string[];
 }
 
-// A type alias, not an interface, so it satisfies the MCP SDK's open-ended result type.
-type ToolOutcome = {
-  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
-  isError: boolean;
-};
-
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => (resolve = r));
-  return { promise, resolve };
-}
-
-/** User messages fed to a live SDK session. */
-class InputChannel implements AsyncIterable<SDKUserMessage> {
-  private queue: SDKUserMessage[] = [];
-  private wake: (() => void) | null = null;
-  private ended = false;
-
-  push(message: SDKUserMessage) {
-    this.queue.push(message);
-    this.wake?.();
-  }
-
-  end() {
-    this.ended = true;
-    this.wake?.();
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
-    while (true) {
-      while (this.queue.length > 0) yield this.queue.shift()!;
-      if (this.ended) return;
-      await new Promise<void>((r) => (this.wake = r));
-      this.wake = null;
-    }
-  }
-}
-
-const toolSignature = (tools: Tool[]) => JSON.stringify(tools.map((t) => [t.name, t.description, t.parameters]));
-
 class ClaudeSession {
   readonly input = new InputChannel();
   readonly query: Query;
-  private readonly mcp: McpServer;
-  private tools: Tool[];
-  private toolSig: string;
+  private readonly bridge: RyeMcpBridge;
   /** Tool calls handed to Rye that it hasn't answered yet. */
   readonly pending = new Map<string, { name: string; args: string }>();
   /** Built-in tool calls (tool_use id → tool name) Claude Code is running itself and hasn't reported a result for. */
@@ -128,9 +104,8 @@ class ClaudeSession {
   /** Built-in tools this session was started with; they can't change while it runs. */
   readonly builtinSig: string;
   private readonly results = new Map<string, Deferred<ToolOutcome>>();
-  private toolListWaiters: Array<() => void> = [];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private stderrTail: string[] = [];
+  private readonly stderrTail = new StderrTail();
   lastResponseId: string | undefined;
   busy = false;
   closed = false;
@@ -145,10 +120,8 @@ class ClaudeSession {
     cwd: string | undefined,
     builtinTools: string[],
   ) {
-    this.tools = tools;
-    this.toolSig = toolSignature(tools);
     this.builtinSig = builtinTools.join(",");
-    this.mcp = this.createMcpServer();
+    this.bridge = new RyeMcpBridge(tools, (call) => this.answerCall(call), MCP_SERVER);
     this.query = queryFn({
       prompt: this.input,
       options: {
@@ -162,49 +135,38 @@ class ClaudeSession {
         // Rye keeps its own history; don't add its chats to the user's Claude Code sessions.
         persistSession: false,
         includePartialMessages: true,
-        mcpServers: { [MCP_SERVER]: { type: "sdk", name: MCP_SERVER, instance: this.mcp, timeout: SDK_TOOL_TIMEOUT_MS } },
+        mcpServers: { [MCP_SERVER]: this.bridge.config() },
         // Rye gates its own tools (approvals, ask_user), so everything on its server is allowed here.
         canUseTool: async (name, input) =>
           name.startsWith(TOOL_PREFIX) || builtinTools.includes(name)
             ? { behavior: "allow", updatedInput: input }
             : { behavior: "deny", message: `${name} is not available in Rye.` },
-        env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "rye/0.1.0" },
+        // An allowlist, not process.env: Rye's .env secrets stay with Rye.
+        env: claudeEnv(),
         ...(cwd ? { cwd } : {}),
-        stderr: (data) => {
-          this.stderrTail.push(data.trim());
-          if (this.stderrTail.length > 5) this.stderrTail.shift();
-        },
+        stderr: (data) => this.stderrTail.push(data),
       },
     });
     this.touch();
   }
 
-  private createMcpServer(): McpServer {
-    const mcp = new McpServer({ name: MCP_SERVER, version: "1.0.0" });
-    mcp.server.registerCapabilities({ tools: { listChanged: true } });
-    mcp.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      for (const wake of this.toolListWaiters.splice(0)) wake();
-      return { tools: this.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.parameters as { type: "object" } })) };
-    });
-    mcp.server.setRequestHandler(CallToolRequestSchema, async (req) => {
-      const id = this.toolUseIdFor(req.params);
-      if (!id) {
-        return { content: [{ type: "text", text: `No matching call to ${req.params.name} is waiting.` }], isError: true };
-      }
-      const outcome = await this.result(id).promise;
-      this.results.delete(id);
-      return outcome;
-    });
-    return mcp;
+  /** An MCP call from Claude Code: wait until Rye has run the tool and delivered its result. */
+  private async answerCall(call: RyeMcpCall): Promise<ToolOutcome> {
+    const id = this.toolUseIdFor(call);
+    if (!id) {
+      return { content: [{ type: "text", text: `No matching call to ${call.name} is waiting.` }], isError: true };
+    }
+    const outcome = await this.result(id).promise;
+    this.results.delete(id);
+    return outcome;
   }
 
   /** The model's tool_use id for an MCP call: sent by Claude Code in _meta, else matched by name and arguments. */
-  private toolUseIdFor(params: { name: string; arguments?: unknown; _meta?: Record<string, unknown> }): string | undefined {
-    const fromMeta = params._meta?.["claudecode/toolUseId"];
-    if (typeof fromMeta === "string") return fromMeta;
-    const args = JSON.stringify(params.arguments ?? {});
-    for (const [id, call] of this.pending) {
-      if (call.name === params.name && call.args === args) return id;
+  private toolUseIdFor(call: RyeMcpCall): string | undefined {
+    if (call.toolUseId) return call.toolUseId;
+    const args = JSON.stringify(call.arguments ?? {});
+    for (const [id, pending] of this.pending) {
+      if (pending.name === call.name && pending.args === args) return id;
     }
     return undefined;
   }
@@ -226,20 +188,7 @@ class ClaudeSession {
 
   /** Swap the tool list and wait for Claude Code to re-read it, so the next model turn sees it. */
   async syncTools(tools: Tool[]) {
-    const sig = toolSignature(tools);
-    if (sig === this.toolSig) return;
-    this.tools = tools;
-    this.toolSig = sig;
-    const reread = new Promise<void>((resolve) => {
-      this.toolListWaiters.push(resolve);
-      setTimeout(resolve, TOOL_LIST_WAIT_MS);
-    });
-    try {
-      await this.mcp.server.sendToolListChanged();
-      await reread;
-    } catch {
-      // Not connected yet; the first tools/list picks up the new list.
-    }
+    await this.bridge.syncTools(tools);
   }
 
   /** Restart the idle countdown. */
@@ -250,7 +199,7 @@ class ClaudeSession {
   }
 
   errorDetail(): string {
-    return this.stderrTail.filter(Boolean).join("\n");
+    return this.stderrTail.text();
   }
 
   close() {
@@ -287,12 +236,6 @@ process.once("exit", closeClaudeSessions);
 const contentText = (content: string | (TextContent | ImageContent)[]) =>
   typeof content === "string" ? content : content.filter((b): b is TextContent => b.type === "text").map((b) => b.text).join("\n");
 
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}… [truncated]` : text);
-
-type UserBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
-
 function userBlocks(content: UserMessage["content"]): UserBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content.map((b) =>
@@ -300,10 +243,6 @@ function userBlocks(content: UserMessage["content"]): UserBlock[] {
       ? { type: "text", text: b.text }
       : { type: "image", source: { type: "base64", media_type: b.mimeType, data: b.data } },
   );
-}
-
-function sdkUserMessage(blocks: UserBlock[]): SDKUserMessage {
-  return { type: "user", message: { role: "user", content: blocks }, parent_tool_use_id: null } as SDKUserMessage;
 }
 
 function resultContent(content: string | (TextContent | ImageContent)[]): ToolOutcome["content"] {
@@ -363,13 +302,6 @@ const emptyUsage = (): Usage => ({
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
-
-interface AnthropicUsage {
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
-  cache_creation_input_tokens?: number | null;
-}
 
 /**
  * `input` is the whole prompt (cached and uncached), since Rye reads it as
@@ -435,41 +367,6 @@ async function continueSession(
   }
   session.close();
   return undefined;
-}
-
-/**
- * Claude Code runs its built-in tools (WebSearch, WebFetch) itself, so they never become pi tool
- * calls. These extra events ride on the pi stream, in order with the text around them, so the
- * agent loop can show them as tool steps. Anything that doesn't know them ignores them.
- */
-export type HarnessToolEvent =
-  | { type: "harness_tool_start"; id: string; name: string; args: Record<string, unknown> }
-  | { type: "harness_tool_result"; id: string; name: string; content: string; isError: boolean };
-
-export function isHarnessToolEvent(event: { type: string }): event is HarnessToolEvent {
-  return event.type === "harness_tool_start" || event.type === "harness_tool_result";
-}
-
-/** Longest built-in tool result passed on for display; a fetched page can be far larger. */
-const BUILTIN_RESULT_CHARS = 6000;
-
-/** Text of a tool_result block's content, which is a string or a list of text/other blocks. */
-function toolResultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((b: { type?: string; text?: string }) => (b?.type === "text" ? b.text ?? "" : ""))
-    .filter(Boolean)
-    .join("\n");
-}
-
-interface StreamEvent {
-  type: string;
-  index?: number;
-  message?: { id?: string; usage?: AnthropicUsage };
-  content_block?: { type: string; id?: string; name?: string };
-  delta?: { type?: string; text?: string; thinking?: string; signature?: string; partial_json?: string; stop_reason?: string | null };
-  usage?: AnthropicUsage;
 }
 
 async function run(
@@ -538,7 +435,7 @@ async function run(
   let blocks = new Map<number, number>();
   const toolJson = new Map<number, string>();
   // Built-in tool calls in the current API response, by content-block index.
-  let builtinBlocks = new Map<number, { id: string; name: string; json: string }>();
+  const builtinBlocks = new ToolUseBlocks();
   const pushHarnessEvent = (event: HarnessToolEvent) => out.push(event as never);
   let stopReason: string | null = null;
   let apiError = "";
@@ -548,7 +445,7 @@ async function run(
     if (ev.type === "message_start") {
       start();
       blocks = new Map();
-      builtinBlocks = new Map();
+      builtinBlocks.reset();
       stopReason = null;
       if (ev.message?.id) message.responseId = ev.message.id;
       outputBase = message.usage.output;
@@ -568,17 +465,13 @@ async function run(
         out.push({ type: "toolcall_start", contentIndex, partial: message });
       } else {
         // A built-in tool: Claude Code runs it, Rye only reports it.
-        if (block.type === "tool_use" && block.name) builtinBlocks.set(ev.index, { id: block.id ?? randomUUID(), name: block.name, json: "" });
+        builtinBlocks.start(ev.index, block);
         blocks.set(ev.index, -1);
         return;
       }
       blocks.set(ev.index, contentIndex);
     } else if (ev.type === "content_block_delta" && ev.index !== undefined && ev.delta) {
-      const builtin = builtinBlocks.get(ev.index);
-      if (builtin) {
-        if (ev.delta.type === "input_json_delta" && ev.delta.partial_json) builtin.json += ev.delta.partial_json;
-        return;
-      }
+      if (builtinBlocks.delta(ev.index, ev.delta)) return;
       const contentIndex = blocks.get(ev.index) ?? -1;
       const block = message.content[contentIndex];
       if (!block) return;
@@ -595,17 +488,11 @@ async function run(
         out.push({ type: "toolcall_delta", contentIndex, delta: ev.delta.partial_json, partial: message });
       }
     } else if (ev.type === "content_block_stop" && ev.index !== undefined) {
-      const builtin = builtinBlocks.get(ev.index);
+      const builtin = builtinBlocks.stop(ev.index);
       if (builtin) {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(builtin.json || "{}");
-        } catch {
-          // show the call without arguments
-        }
         start();
         live.builtinCalls.set(builtin.id, builtin.name);
-        pushHarnessEvent({ type: "harness_tool_start", id: builtin.id, name: builtin.name, args });
+        pushHarnessEvent({ type: "harness_tool_start", id: builtin.id, name: builtin.name, args: builtin.args });
         return;
       }
       const contentIndex = blocks.get(ev.index) ?? -1;
@@ -659,27 +546,21 @@ async function run(
       } else if (m.type === "user") {
         // Tool results Claude Code produced itself come back as a user message.
         if (m.parent_tool_use_id) continue;
-        const content = (m.message as { content?: unknown }).content;
-        for (const block of Array.isArray(content) ? (content as Array<Record<string, unknown>>) : []) {
-          const id = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
-          const name = live.builtinCalls.get(id);
-          if (block.type !== "tool_result" || !name) continue;
-          live.builtinCalls.delete(id);
+        for (const block of toolResultBlocks(m)) {
+          const name = live.builtinCalls.get(block.id);
+          if (!name) continue;
+          live.builtinCalls.delete(block.id);
           pushHarnessEvent({
             type: "harness_tool_result",
-            id,
+            id: block.id,
             name,
             content: clip(toolResultText(block.content), BUILTIN_RESULT_CHARS),
-            isError: block.is_error === true,
+            isError: block.isError,
           });
         }
       } else if (m.type === "assistant" && m.error) {
         // API failures arrive as a synthetic assistant message, e.g. "Not logged in · Please run /login".
-        const text = (m.message.content as Array<{ type: string; text?: string }>)
-          .map((b) => (b.type === "text" ? b.text ?? "" : ""))
-          .join("")
-          .trim();
-        apiError = text || m.error;
+        apiError = assistantErrorText(m);
       } else if (m.type === "result") {
         if (m.subtype === "success" && !m.is_error) {
           if (!message.content.some((b) => b.type === "text") && m.result) {
@@ -694,7 +575,7 @@ async function run(
           // One-off calls have nothing to continue.
           if (!live.chatSessionId) live.close();
         } else {
-          const detail = apiError || (m.subtype === "success" ? m.result : m.errors.join("; ")) || m.subtype;
+          const detail = resultErrorDetail(m, apiError);
           live.close();
           fail(`Claude: ${detail}`);
         }
@@ -740,7 +621,7 @@ let infoCache: { info: ClaudeHarnessInfo; at: number } | null = null;
 export async function claudeHarnessInfo(queryFn: QueryFn = sdkQuery): Promise<ClaudeHarnessInfo> {
   if (infoCache && Date.now() - infoCache.at < INFO_CACHE_MS) return infoCache.info;
   const input = new InputChannel();
-  const q = queryFn({ prompt: input, options: { tools: [], settingSources: [], strictMcpConfig: true, persistSession: false } });
+  const q = queryFn({ prompt: input, options: { tools: [], settingSources: [], strictMcpConfig: true, persistSession: false, env: claudeEnv() } });
   try {
     const init = await Promise.race([
       q.initializationResult(),

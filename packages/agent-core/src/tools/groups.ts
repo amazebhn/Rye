@@ -88,6 +88,8 @@ const STATIC_GROUPS: Array<{ id: string; description: string; tools: string[] }>
     tools: ["propose_tool_tool", "install_tool_tool", "list_custom_tools_tool", "delete_custom_tool_tool"],
   },
   { id: "admin", description: "model pricing, add MCP servers", tools: ["set_model_pricing_tool", "get_model_pricing_tool", "add_mcp_server_tool"] },
+  // Present only while [code] allows a repo (getTools); an empty group is dropped.
+  { id: "code", description: "start a code session (a coding agent on a branch of an allowed repo) and check on one", tools: ["start_code_session_tool", "code_session_status_tool"] },
 ];
 
 /** Group the given tools. Unknown built-ins land in core so nothing silently disappears. */
@@ -275,6 +277,12 @@ const KEYWORD_RULES: Record<string, RegExp[]> = {
   results: [/\bres_[a-z0-9]{8}\b/i],
   custom_tools: [/\bcustom tools?\b/i, /\b(create|make|build|write|install|delete|remove)\s+(?:(?:a|an|new|the|custom)\s+)*tools?\b/i],
   admin: [/\b(pricing|prices?|costs?|mcp|connectors?)\b/i],
+  code: [
+    /\b(implement|implementing|refactor|refactoring|worktree|pull requests?|PRs?|code sessions?)\b/i,
+    /\bfix (it |this |that )?in (the )?code\b/i,
+    /\b(new|a|create|make|open) (git )?branch\b/i,
+    /\brye:code-session:/,
+  ],
 };
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

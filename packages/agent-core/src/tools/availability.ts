@@ -7,6 +7,8 @@
  * databases and descriptions, never hosts or credentials.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Settings } from "../config.js";
 import { describeProblems, engineName, listConnections } from "../db/connections.js";
 import type { ToolGroup } from "./groups.js";
@@ -105,6 +107,25 @@ function gitAvailability(input: AvailabilityInput): Availability {
   return repoAvailability(input, "known");
 }
 
+/**
+ * Code sessions: ready when `[code]` allows repos that exist; the sandbox is checked when a session
+ * starts (no sandbox, no session). `settingsForEnv` leaves `[code]` alone, so this is the same in
+ * every environment.
+ */
+function codeAvailability({ settings }: AvailabilityInput, exists: (path: string) => boolean = existsSync): Availability {
+  const code = settings.code;
+  if (!code.enabled) return { state: "off", reason: "Code sessions are turned off ([code] enabled = false)." };
+  if (code.repos.length === 0) return { state: "off", reason: "No repositories are allowed for code sessions ([[code.repos]] in config.toml)." };
+  const items = code.repos.map((r) => {
+    const ok = exists(r.path) && exists(join(r.path, ".git"));
+    return { name: r.name, state: ok ? ("ready" as const) : ("off" as const), detail: ok ? `${r.base ? `base ${r.base} · ` : ""}${r.isolation}` : `${r.path} is missing or not a git repository` };
+  });
+  const usable = items.filter((i) => i.state === "ready");
+  if (usable.length === 0) return { state: "off", reason: "None of the allowed repositories can be found.", items };
+  if (usable.length < items.length) return { state: "partial", reason: `${plural(usable.length, "repository", "repositories")} usable; ${items.length - usable.length} missing.`, items };
+  return ready(`${plural(usable.length, "repository", "repositories")}: ${usable.map((i) => i.name).join(", ")}.`, items);
+}
+
 export function mcpAvailability(server: McpServerState | undefined): Availability {
   if (!server) return ready("Connected.");
   if (server.disabled) return { state: "off", reason: "Turned off in MCP servers." };
@@ -134,6 +155,8 @@ export function groupAvailability(groupId: string, input: AvailabilityInput): Av
       return gitAvailability(input);
     case "code_search":
       return repoAvailability(input, "searchable");
+    case "code":
+      return codeAvailability(input);
     case CORE_GROUP:
       return ready("Always loaded.");
     default:

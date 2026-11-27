@@ -34,6 +34,8 @@ import { LEGACY_MYSQL_NAME, engineName, listConnections } from "./db/connections
 import { driverFor, errorText } from "./db/drivers.js";
 import { readAgentSettings, chattinessPolicy } from "./agents/settings.js";
 import { pickAutoRoutedAgent, pickFollowUpAgent, pickTaggedAgent, type RecentTurn } from "./agents/router.js";
+import { chatRequestKind, runTurns, type TurnOutcome } from "./agents/turns.js";
+import { QuickRewindSchema, rewindPlan, StoredRewindSchema } from "./chat/rewind.js";
 import { ChatStore } from "./chat/store.js";
 import { ChatFolderStore } from "./chat/folders.js";
 import { chatFolderRoutes } from "./chat/folder-routes.js";
@@ -68,7 +70,6 @@ import {
 import { extractSopFromChat } from "./sop/extractor.js";
 import { extractSkillFromChat } from "./skill/extractor.js";
 import { runAgent, clearSession, generateChatTitle, generateEditSuggestions, rewindSession } from "./agent/loop.js";
-import type { RewindTurn } from "./agent/loop.js";
 import { turnMessage } from "./agent/continue.js";
 import { editSuggestionKey, getCachedEditSuggestions, setCachedEditSuggestions } from "./edit-suggestions/cache.js";
 import { resolveTaskModelId, resolveTierModelId } from "./model-tiers.js";
@@ -76,7 +77,7 @@ import { getPendingDraft, clearPendingDraft, setAgentStore, setAttachmentStore, 
 import { AttachmentStore, isAttachmentId, type Attachment } from "./chat/attachments.js";
 import { attachmentRoutes } from "./chat/attachment-routes.js";
 import { ollamaImageDescriber } from "./chat/describe-image.js";
-import { parseContextRefs } from "./agent/references.js";
+import { parseContextRefs, REFERENCES_ERROR } from "./agent/references.js";
 import { CORE_GROUP, getToolGroups, LOAD_TOOLS_TOOL_NAME } from "./tools/groups.js";
 import { groupTitle, toolTitle } from "./tools/titles.js";
 import { toolGroupReport } from "./tools/availability.js";
@@ -90,6 +91,10 @@ import { getCopilotBearerToken } from "./copilot-auth.js";
 import { copilotFetch, fetchCopilotModels, readModelsCache, supportsChatCompletions } from "./copilot-models.js";
 import { fetchOllamaModels } from "./llm-provider.js";
 import { CLAUDE_MODEL_ALIASES, claudeHarnessInfo } from "./harness/claude-sdk.js";
+import { ChatKindRegistry, codeChatKind, kindChatTurn } from "./chat/kinds.js";
+import { codeRoutes } from "./code/routes.js";
+import { createCodeService } from "./code/service.js";
+import { setCodeToolService } from "./tools/code.js";
 
 // ---------------------------------------------------------------------------
 // App bootstrap
@@ -137,6 +142,14 @@ const pruneAttachments = () => {
 (setInterval(pruneAttachments, 60 * 60 * 1000) as { unref?: () => void }).unref?.();
 // Images saved while no vision model was available get described once one is.
 for (const id of attachmentStore.undescribed()) attachmentStore.describeLater(id);
+
+// Code sessions (docs/design/code-sessions.md): off, and never touching code.db, until [code] lists a repo.
+// A chat of another kind (code) gets its messages from chat/kinds.ts; deleting one archives its session.
+const codeService = createCodeService({ chats: chatStore, attachments: attachmentStore });
+const chatKinds = new ChatKindRegistry();
+chatKinds.register(codeChatKind(codeService));
+chatStore.onRemoveKind = (chat) => chatKinds.onRemove(chat);
+setCodeToolService({ ...codeService, chatForSession: (sessionId) => chatStore.getBySession(sessionId)?.id });
 
 // Shared usage tracking store instance
 const usageStore = new UsageStore();
@@ -247,35 +260,31 @@ app.get("/health", (c) => {
 
 const TurnIdSchema = z.string().min(1).max(128).optional();
 const ChatEnvSchema = z.string().min(1).max(128).optional();
-const RewindSchema = z.object({
-  chat_id: z.string().min(1).max(128),
-  index: z.number().int().nonnegative(),
-});
-
-function toRewindTurn(raw: unknown): RewindTurn | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const { role, content, id } = raw as Record<string, unknown>;
-  if ((role !== "user" && role !== "assistant") || typeof content !== "string") return null;
-  return { role, content, id: typeof id === "string" ? id : undefined };
-}
-
 /** Cut the chat record and agent session before the user message at `index`. Returns an error message on bad input. */
 function rewindChat(raw: unknown, sessionId: string): string | null {
-  const parsed = RewindSchema.safeParse(raw);
+  const parsed = StoredRewindSchema.safeParse(raw);
   if (!parsed.success) return "Invalid rewind: expected { chat_id: string, index: integer >= 0 }";
   const { chat_id, index } = parsed.data;
 
   const chat = chatStore.get(chat_id);
   if (!chat || chat.sessionId !== sessionId) return "Chat not found for this session";
-  const turns = chat.messages.map(toRewindTurn);
-  if (index >= turns.length || turns[index]?.role !== "user") return "Rewind index must point at a user message";
-
-  const kept = turns.slice(0, index).filter((t): t is RewindTurn => t !== null);
-  const exact = turns.slice(index).every((t) => t?.role !== "user" || t.id !== undefined);
-  const outcome = rewindSession(sessionId, kept, exact);
+  const plan = rewindPlan(chat.messages, index);
+  if ("error" in plan) return plan.error;
+  const outcome = rewindSession(sessionId, plan.kept, plan.exact);
   console.log(`[${new Date().toISOString()}] [chat] rewind chat=${chat_id} index=${index} session=${outcome}`);
 
   chatStore.upsert({ ...chat, messages: chat.messages.slice(0, index), pendingPrompt: undefined, updatedAt: Date.now() });
+  return null;
+}
+
+/** The quick chat isn't stored: it sends its messages, and only the agent session is cut. */
+function rewindQuickChat(raw: unknown, sessionId: string): string | null {
+  const parsed = QuickRewindSchema.safeParse(raw);
+  if (!parsed.success) return "Invalid rewind: expected { index: integer >= 0, messages: [...] }";
+  const plan = rewindPlan(parsed.data.messages, parsed.data.index);
+  if ("error" in plan) return plan.error;
+  const outcome = rewindSession(sessionId, plan.kept, plan.exact);
+  console.log(`[${new Date().toISOString()}] [chat] rewind quick chat index=${parsed.data.index} session=${outcome}`);
   return null;
 }
 
@@ -286,6 +295,8 @@ app.post("/chat/", async (c) => {
     continue?: boolean;
     session_id?: string;
     system_prompt_suffix?: string;
+    // The web app's quick chat: never routed to agents, and on the low model tier unless `model` names one.
+    quick?: boolean;
     model?: string;
     turn_id?: string;
     rewind?: unknown;
@@ -293,11 +304,16 @@ app.post("/chat/", async (c) => {
     agent_id?: string;
     // Ids of files uploaded to /chat/attachments/ for this message.
     attachments?: unknown;
-    // SOPs and tools the user pointed this message at: [{type: "sop", id}, {type: "tool", name}].
+    // What the user pointed this message at: [{type: "sop", id}, {type: "tool", name}, {type: "quote", text, source}].
     references?: unknown;
+    // The chat the message is for; a chat of another kind (a code session) is handled by its kind.
+    chat_id?: unknown;
   }>();
+  // Only a chat_id naming a stored chat of another kind answers here; every other request goes on below, unchanged.
+  const kindTurn = await kindChatTurn(c, chatStore, chatKinds, body, (id) => (isAttachmentId(id) ? attachmentStore.get(id) : null));
+  if (kindTurn) return kindTurn;
   const refs = parseContextRefs(body.references);
-  if (refs === null) return c.json({ error: "references must be up to 10 {type: \"sop\", id} or {type: \"tool\", name} items" }, 400);
+  if (refs === null) return c.json({ error: REFERENCES_ERROR }, 400);
 
   const sessionId = body.session_id ?? crypto.randomUUID();
   let attached: Attachment[] = [];
@@ -316,12 +332,14 @@ app.post("/chat/", async (c) => {
   // The AI create/edit chats for SOPs, Skills and Agents (they send a system prompt suffix). They are Rye
   // doing an authoring job: never routed to a custom agent (an "@gleep" in an agent being edited is its name,
   // not a tag), and run on the "SOP & Skill capture" model from Settings unless one was picked in the chat itself.
-  const isAuthoring = typeof body.system_prompt_suffix === "string" && body.system_prompt_suffix.trim() !== "";
-  const turnModel = body.model || (isAuthoring ? await resolveTaskModelId(getSettings(), "extraction") : undefined);
+  // The web app's quick chat (`quick: true`) routes the user's own @tags but never auto-routes or hands over,
+  // and runs on the low model tier (a tagged agent with a model of its own keeps that model).
+  const requestKind = chatRequestKind(body);
+  const isAuthoring = requestKind.authoring;
   const allAgents = agentStore.list();
   const collabSettings = readAgentSettings();
   // Agents may tag each other to hand over, wherever replies from other agents are allowed.
-  const handOffs = !isDedicatedAgentChat && !isAuthoring && collabSettings.allowAgentReplies && allAgents.length > 0;
+  const handOffs = !isDedicatedAgentChat && requestKind.autoRoute && collabSettings.allowAgentReplies && allAgents.length > 0;
 
   // Extract recent turns from persisted chat history (for decision-model routing context)
   const existingChat = chatStore.getBySession(sessionId);
@@ -341,8 +359,15 @@ app.post("/chat/", async (c) => {
     });
 
   // Resolve active agent: explicit agent_id → @slug mention → optional decision-model auto-routing
-  const userTagged = body.agent_id || isAuthoring ? [] : agentStore.resolveMentions(message);
+  const userTagged = body.agent_id || !requestKind.tags ? [] : agentStore.resolveMentions(message);
   let activeAgent: AgentDefinition | null = body.agent_id ? agentStore.get(body.agent_id) : (userTagged[0] ?? null);
+  const turnModel =
+    body.model ||
+    (isAuthoring
+      ? await resolveTaskModelId(getSettings(), "extraction")
+      : requestKind.quick && !activeAgent?.model
+        ? await resolveTierModelId(getSettings(), "low")
+        : undefined);
 
   const turnId = TurnIdSchema.safeParse(body.turn_id);
   if (!turnId.success) return c.json({ error: "Invalid turn_id" }, 400);
@@ -360,7 +385,7 @@ app.post("/chat/", async (c) => {
     signal: abort.signal,
   };
   if (body.rewind !== undefined) {
-    const error = rewindChat(body.rewind, sessionId);
+    const error = requestKind.quick ? rewindQuickChat(body.rewind, sessionId) : rewindChat(body.rewind, sessionId);
     if (error) return c.json({ error }, 400);
   }
 
@@ -387,10 +412,11 @@ app.post("/chat/", async (c) => {
       // The user's files belong to their own message; follow-up agents can still read them by id.
       turnAttachments: Attachment[] = [],
       turnRefs: typeof refs = [],
-    ): Promise<{ text: string; stoppedEarly: boolean; finalSessionId: string }> => {
+    ): Promise<TurnOutcome> => {
       let text = "";
       let stoppedEarly = false;
       let finalSessionId = sessionId;
+      let ended = false;
 
       for await (const ev of runAgent(
         sessionId,
@@ -453,6 +479,7 @@ app.post("/chat/", async (c) => {
             break;
           case "done":
             finalSessionId = ev.session_id;
+            ended = true;
             if (emitDone) await send({ type: "done", session_id: ev.session_id });
             break;
           case "error":
@@ -461,12 +488,12 @@ app.post("/chat/", async (c) => {
             break;
         }
       }
-      return { text, stoppedEarly, finalSessionId };
+      return { text, stoppedEarly, finalSessionId, ended };
     };
 
     try {
       // Optional decision-model auto-routing for untagged messages in generic chats
-      if (!isDedicatedAgentChat && !isAuthoring && !activeAgent && !body.continue && collabSettings.autoRoute && allAgents.length > 0) {
+      if (!isDedicatedAgentChat && requestKind.autoRoute && !activeAgent && !body.continue && collabSettings.autoRoute && allAgents.length > 0) {
         activeAgent = await pickAutoRoutedAgent({
           message,
           recentTurns,
@@ -487,10 +514,8 @@ app.post("/chat/", async (c) => {
       // Tags always get at least one hand-off, and every agent the user tagged gets its turn.
       const hopLimit = Math.max(maxHops, queued.length + 1);
 
-      const first = await streamOneTurn(message, activeAgent, !canFollowUp, turnId.data, attached, refs);
-      let lastSessionId = first.finalSessionId;
-
-      if (canFollowUp && !first.stoppedEarly && !abort.signal.aborted) {
+      const followUps = async (first: TurnOutcome): Promise<string> => {
+        let lastSessionId = first.finalSessionId;
         const convo: RecentTurn[] = [
           ...recentTurns,
           { role: "user", speaker: "User", content: message },
@@ -537,11 +562,16 @@ app.post("/chat/", async (c) => {
           lastSpeakerName = nextAgent.name;
           if (follow.stoppedEarly) break;
         }
+        return lastSessionId;
+      };
 
-        if (!abort.signal.aborted) {
-          await send({ type: "done", session_id: lastSessionId });
-        }
-      }
+      await runTurns({
+        canFollowUp,
+        first: () => streamOneTurn(message, activeAgent, !canFollowUp, turnId.data, attached, refs),
+        followUps,
+        aborted: () => abort.signal.aborted,
+        sendDone: (sessionId) => send({ type: "done", session_id: sessionId }),
+      });
     } catch (err) {
       await send({ type: "error", error: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -869,6 +899,8 @@ app.delete("/memory/:key", (c) => {
 
 // Trailing slashes so list/create routes answer at /knowledge/ and /agents/ (matching /sop/ and /skill/).
 app.route("/knowledge/", knowledgeRoutes(knowledgeStore));
+// Every /code/ route answers 404 until [code] lists a repo (code/routes.ts).
+app.route("/code/", codeRoutes({ runner: () => codeService.runner(), enabled: () => codeService.enabled() }));
 app.route("/agents/", agentRoutes(agentStore));
 app.route("/speech/", speechRoutes());
 // The user's name, for greetings and the system prompt.
@@ -1675,6 +1707,8 @@ if (import.meta.main) {
   // Fire and forget: MCP tools appear as soon as each server handshakes.
   void initMcp();
   warmOllamaDecisionModel(getSettings());
+  // Closes code-session turns a restart cut off; does nothing for a Rye that never used code sessions.
+  codeService.start();
   console.log(`Rye agent listening on http://${host}:${port}`);
   Bun.serve({
     fetch: app.fetch,

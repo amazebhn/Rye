@@ -718,7 +718,8 @@
 }
 .agent-contact-card {
   position: fixed;
-  z-index: 60;
+  /* The hover-card layer (with .message-info-card): over floating panels (the Artifacts card, Quick chat). */
+  z-index: 400;
   overflow: hidden;
   border: 1px solid var(--main-border);
   border-radius: var(--radius-lg);
@@ -907,7 +908,18 @@
 .agent-mention-pill--inline {
   vertical-align: middle;
   transform: translateY(-1px);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
 }
+/* The caret is touching this tag (MentionComposer): Backspace/Delete takes it whole. The ring is drawn
+   inside the pill (border + inset shadow) so the field's edge can't clip it, and the field hides its own
+   caret meanwhile (.has-caret-pill): the ringed tag is the caret. */
+.agent-mention-pill--inline.is-caret {
+  border-color: var(--main-accent);
+  box-shadow: inset 0 0 0 1px var(--main-accent);
+  background: color-mix(in srgb, var(--main-accent) 18%, var(--main-bg));
+}
+.has-caret-pill { caret-color: transparent; }
+@media (prefers-reduced-motion: reduce) { .agent-mention-pill--inline { transition: none; } }
 .agent-mention-pill-avatar {
   width: 16px;
   height: 16px;

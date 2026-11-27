@@ -3,7 +3,7 @@
  * can be linked to, reloaded, and reached with Back/Forward.
  *
  *   /settings                 Settings → General
- *   /settings/<page>          a Settings page (models, search, agents, skills, mcp, tools, usage, integrations)
+ *   /settings/<page>          a Settings page (models, search, agents, skills, mcp, tools, code, usage, integrations)
  *   /settings/tools/<tool>    the Tools page, scrolled to and highlighting one tool
  *   /sops/<id>                one SOP
  *   /sops, /memory, /agents   the other sidebar pages
@@ -17,7 +17,8 @@
  * must do the same and answer a page load of these exact paths with index.html.
  */
 
-export const SETTINGS_PAGES = ["general", "models", "search", "agents", "skills", "mcp", "tools", "usage", "integrations"] as const;
+// "code" (Settings → Code) is listed only while the server has code sessions (utils/codeApi.ts).
+export const SETTINGS_PAGES = ["general", "models", "search", "agents", "skills", "mcp", "tools", "code", "usage", "integrations"] as const;
 export type SettingsPageKey = (typeof SETTINGS_PAGES)[number];
 
 export function settingsPath(page: SettingsPageKey = "general", item?: string): string {

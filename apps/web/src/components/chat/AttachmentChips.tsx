@@ -1,6 +1,16 @@
-import React from "react";
-import { BookOpen, FileText, LoaderCircle, TriangleAlert, Wrench, X } from "lucide-react";
-import { attachmentUrl, formatBytes, refKey, type AttachmentRef, type ContextRef, type PendingAttachment } from "../../utils/attachments";
+import React, { useId } from "react";
+import { BookOpen, FileText, LoaderCircle, TextQuote, TriangleAlert, Wrench, X } from "lucide-react";
+import {
+  attachmentUrl,
+  formatBytes,
+  quoteSnippet,
+  quoteTitle,
+  refKey,
+  type AttachmentRef,
+  type ContextRef,
+  type PendingAttachment,
+  type QuoteContextRef,
+} from "../../utils/attachments";
 
 type Item =
   | { kind: "pending"; item: PendingAttachment }
@@ -9,6 +19,47 @@ type Item =
 function detail(ref: AttachmentRef | undefined, size: number): string {
   if (ref?.kind === "pdf") return `PDF${ref.pages ? ` · ${ref.pages} page${ref.pages === 1 ? "" : "s"}` : ""} · ${formatBytes(size)}`;
   return formatBytes(size);
+}
+
+/**
+ * A quote (text selected somewhere and added to the chat) as a slim one-line pill: a small quote
+ * icon, then "fingerprint.js · L12–18" ("· old" for an old-side diff quote), or the source ("Rye's
+ * reply") and the excerpt's first words; × on the right in the composer. Hovering or focusing it
+ * shows the whole excerpt in a card (mono for code), headed "fingerprint.js · lines 12–18 · new".
+ */
+function QuoteChip({ quote, onRemove }: { quote: QuoteContextRef; onRemove?: () => void }) {
+  const tipId = useId();
+  const { source } = quote;
+  const lines = source.lines;
+  const label = lines ? `${quoteTitle(quote)}${source.side === "old" ? " · old" : ""}` : source.label;
+  const snippet = lines ? "" : quoteSnippet(quote.text, 24);
+  const name = snippet ? `${label}: ${snippet}` : label;
+  const code = source.kind === "diff" || Boolean(source.path);
+  const head = [
+    source.path ?? source.label,
+    lines ? (lines.start === lines.end ? `line ${lines.start}` : `lines ${lines.start}–${lines.end}`) : "",
+    source.side ?? "",
+  ].filter(Boolean).join(" · ");
+  return (
+    <li className="attachment-chip is-quote">
+      <span className="quote-pill">
+        <span className="quote-pill-main" tabIndex={0} aria-describedby={tipId} aria-label={`Quote: ${name}`}>
+          <TextQuote size={14} className="quote-pill-icon" aria-hidden="true" />
+          <span className="quote-pill-label">{label}</span>
+          {snippet && <span className="quote-pill-snippet">{snippet}</span>}
+        </span>
+        {onRemove && (
+          <button type="button" className="quote-pill-remove" onClick={onRemove} aria-label={`Remove quote ${name}`} title="Remove">
+            <X size={12} />
+          </button>
+        )}
+      </span>
+      <span id={tipId} role="tooltip" className="attachment-quote-pop">
+        <span className="attachment-quote-pop-head">{head}</span>
+        <span className={`attachment-quote-pop-text${code ? " is-code" : ""}`}>{quote.text}</span>
+      </span>
+    </li>
+  );
 }
 
 /**
@@ -41,6 +92,7 @@ export default function AttachmentChips({
     <ul className={`attachment-chips ${className}`} aria-label="Attached to this message">
       {(refs ?? []).map((ref) => {
         const key = refKey(ref);
+        if (ref.type === "quote") return <QuoteChip key={key} quote={ref} onRemove={onRemoveRef ? () => onRemoveRef(key) : undefined} />;
         const label = ref.type === "sop" ? ref.title : ref.name;
         return (
           <li key={key} className="attachment-chip" title={ref.type === "sop" ? `SOP: ${ref.title}` : `Tool: ${ref.name}`}>

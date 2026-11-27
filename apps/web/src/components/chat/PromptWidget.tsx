@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, MessageCircleQuestion, ShieldAlert } from "lucide-react";
 import type { PendingPrompt } from "@rye/shared";
-import { isDenial, isPermissionPrompt } from "../../utils/approval";
+import { isDenial, isPermissionPrompt, SESSION_PATTERN_OPTION } from "../../utils/approval";
 import InlineMarkdown from "./InlineMarkdown";
 
 interface Props {
@@ -61,7 +61,13 @@ export default function PromptWidget({ prompt, onAnswer }: Props) {
     }
   }
 
-  const optionCopy = (option: string) => (approval && APPROVAL_COPY[option]) || { title: option };
+  const optionCopy = (option: string) => {
+    if (!approval) return { title: option };
+    const pattern = SESSION_PATTERN_OPTION.exec(option);
+    // Code sessions: `Allow "<pattern>" for this session`, shown like "Allow this tool".
+    if (pattern) return { title: `Allow \`${pattern[1]}\``, detail: "For this session" };
+    return APPROVAL_COPY[option] ?? { title: option };
+  };
 
   const answer = (value: string) => {
     if (submitting || !value.trim()) return;
@@ -171,6 +177,9 @@ export default function PromptWidget({ prompt, onAnswer }: Props) {
             );
           })}
         </div>
+      )}
+      {prompt.live && (
+        <p className="prompt-live-note">The agent is waiting on this step; if it isn’t answered in time, it’s denied.</p>
       )}
       {!approval && (
         <div className="prompt-answer-row">

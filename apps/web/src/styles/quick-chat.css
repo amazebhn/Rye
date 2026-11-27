@@ -1,0 +1,169 @@
+/* ── Quick chat (components/quick/QuickChat.tsx) ──────────────────────────────
+   A small floating card over the app, on the floating Artifacts card's scale: the menu surface
+   (--sidebar-menu-*, --radius-2xl), everything inset 8px from the card's edge, controls and chips
+   inside at --radius-md (concentric with the 16px corner at that inset), text starting 16px in.
+   No backdrop: the page stays usable beside it. Placed and sized inline (left/top/width/height).
+   Inside is the chat's own MessageList and MessageInput (variant "compact", below). */
+.quick-chat {
+  position: fixed;
+  /* The floating-panel layer, with the floating Artifacts card (160): over the page and the phone drawer
+     (150), under hover cards (400), menus (500), toasts (600), search (650) and modals. */
+  z-index: 160;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  /* Not clipped: the composer's tag suggestions and + menu open upward over the messages, and may pass
+     the card's edge. The messages clip themselves (.quick-chat-body). */
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-2xl);
+  background: var(--sidebar-menu-bg);
+  box-shadow: var(--sidebar-menu-shadow);
+  color: var(--main-fg);
+  animation: quick-chat-in 0.14s ease-out;
+}
+/* Dark menus sit a step above the page: surfaces inside the card follow, so fields and rows still read. */
+:root[data-theme="dark"] .quick-chat {
+  --main-bg: var(--sidebar-menu-bg);
+  --main-surface: var(--sidebar-menu-trigger-bg);
+  --main-surface-alt: var(--sidebar-menu-hover);
+}
+@keyframes quick-chat-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .quick-chat { animation: none; } }
+
+/* 46px of header (30px controls with 8px above and below), then its 1px line. */
+.quick-chat-header {
+  height: 47px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 16px;
+  border-bottom: 1px solid var(--main-border);
+  user-select: none;
+  touch-action: none;
+}
+.quick-chat-header.is-draggable { cursor: grab; }
+.quick-chat-header.is-draggable:active { cursor: grabbing; }
+
+.quick-chat-title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--main-fg);
+}
+.quick-chat-title > svg { color: var(--main-fg-muted); }
+
+.quick-chat-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  background: var(--main-surface);
+  color: var(--main-fg-muted);
+  font-size: 11.5px;
+  line-height: 18px;
+}
+
+.quick-chat-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.quick-chat-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.quick-chat-icon-btn:hover:not(:disabled) { background: var(--main-surface); color: var(--main-fg); }
+.quick-chat-icon-btn:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.quick-chat-icon-btn:disabled { opacity: 0.4; cursor: default; }
+
+.quick-chat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.quick-chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  color: var(--main-fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.quick-chat-empty p { margin: 0; max-width: 240px; }
+
+/* The chat's message list, narrowed: names above messages (as on a phone), text 16px in. */
+.quick-chat .message-list { padding: 12px 16px 16px; background: transparent; }
+.quick-chat .message-row,
+.quick-chat .message-row.user {
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  /* Holds the visually hidden "You" label below inside the scroller. */
+  position: relative;
+}
+.quick-chat .message-row.user { align-items: flex-end; }
+.quick-chat .message-role { min-width: 0; padding-top: 0; font-size: 12px; }
+.quick-chat .message-role.user {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.quick-chat .message-row > .message-body { flex: none; width: 100%; }
+.quick-chat .message-row > .message-body.user { width: auto; max-width: 85%; }
+.quick-chat .md-body { font-size: 13.5px; }
+/* The composer is MessageInput's "compact" variant (chat.css). Its tag suggestions fit the card. */
+.quick-chat .mention-popover { width: auto; right: 0; }
+
+/* Resizing: invisible hit areas inside the card's right edge, bottom edge and bottom-right corner, shown
+   only by the cursor. They sit in the card's 8px inset, clear of the composer's controls. */
+.quick-chat-resize {
+  position: absolute;
+  touch-action: none;
+}
+.quick-chat-resize--x { top: 47px; right: 0; bottom: 16px; width: 6px; cursor: ew-resize; }
+.quick-chat-resize--y { left: 16px; right: 16px; bottom: 0; height: 6px; cursor: ns-resize; }
+.quick-chat-resize--xy { right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+
+/* Phone width: a bottom sheet in the menu colours (like a compact Modal), not draggable, no backdrop. */
+@media (max-width: 767px) {
+  .quick-chat--sheet {
+    left: 8px;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    height: min(72dvh, 560px);
+  }
+  .quick-chat--sheet .quick-chat-header { height: 53px; padding: 8px 8px 8px 16px; }
+  .quick-chat--sheet .quick-chat-icon-btn { width: 36px; height: 36px; }
+  .quick-chat--sheet .quick-chat-title { font-size: 14px; }
+}

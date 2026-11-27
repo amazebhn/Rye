@@ -243,11 +243,32 @@
   padding: 12px 12px 12px 20px;
   border-bottom: 1px solid var(--main-border);
 }
-/* Floating: the card's top (8px) and border (1px) eat into the header, so it is 9px shorter and its content
-   sits 9px less from the top: the bottom border and the title's centre line up with the chat header's. */
+/* Floating, the card is a menu-like surface on one scale: everything is inset 8px from the card's edge,
+   rows and controls inside it are --radius-md (concentric with the card's 16px corner at that inset), and
+   all text starts 16px in (8px inset + 8px row padding). The header is 46px with its 30px controls centred
+   (8px above and below); with the card 8px down and its 1px border, its bottom line still meets the chat
+   header's (55px). */
 .artifact-sheet--floating .artifacts-panel-header {
   height: calc(55px - var(--artifacts-float-top) - 1px);
-  padding-top: calc(12px - var(--artifacts-float-top) - 1px);
+  padding: 8px 8px 8px 16px;
+}
+.artifact-sheet--floating .artifacts-icon-btn,
+.artifact-sheet--floating .artifacts-back,
+.artifact-sheet--floating .artifacts-search,
+.artifact-sheet--floating .artifacts-notice-action,
+.artifact-sheet--floating .artifacts-notice-close,
+.artifact-sheet--floating .artifact-sheet-version,
+.artifact-sheet--floating .artifacts-notice { border-radius: var(--radius-md); }
+/* Desktop only: on a phone the card is a full-screen sheet with its own safe-area padding (Phone width). */
+@media (min-width: 768px) {
+  .artifact-sheet--floating .artifacts-list { padding: 8px 8px 24px; }
+  .artifact-sheet--floating .artifacts-search { margin: 0 0 4px; }
+  .artifact-sheet--floating .artifact-view-head { padding: 10px 8px 10px 16px; }
+  .artifact-sheet--floating .artifact-sheet-toolbar { padding: 8px 8px 8px 12px; }
+  /* Frame and grid bodies stay full bleed. */
+  .artifact-sheet--floating .artifact-sheet-body:not(.artifact-sheet-body--frame):not(.artifact-sheet-body--grid) { padding: 16px 16px 24px; }
+  .artifact-sheet--floating .artifact-sheet-body--grid > .artifact-sheet-state { padding: 16px; }
+  .artifact-sheet--floating .artifact-sheet-body--grid > .artifact-sheet-pre { padding: 16px 16px 24px; }
 }
 
 .artifacts-panel-title {

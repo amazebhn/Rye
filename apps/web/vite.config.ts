@@ -44,6 +44,10 @@ export default defineConfig(({ mode }) => {
         "/models": { target: agentUrl, changeOrigin: true },
         "/mcp": { target: agentUrl, changeOrigin: true },
         "/profile": { target: agentUrl, changeOrigin: true },
+        // Code sessions. No page address starts with /code (chats of every kind are /c/<id>); a
+        // regular expression anyway, so only /code/… and /code itself reach the backend. The event
+        // streams stay open for as long as a tab follows a run, hence no proxy timeout.
+        "^/code(?:/|\\?|$)": { target: agentUrl, changeOrigin: true },
       },
     },
   };

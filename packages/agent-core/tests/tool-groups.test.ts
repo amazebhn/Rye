@@ -89,6 +89,16 @@ describe("defaultToolGroupSelector", () => {
     expect(await select("why is checkout slow right now")).not.toContain("chats");
   });
 
+  test("asking for code changes enables the code group", async () => {
+    expect(groups.find((g) => g.id === "code")?.tools.map((t) => t.name)).toEqual(["start_code_session_tool", "code_session_status_tool"]);
+    expect(await select("implement retries in the search client")).toContain("code");
+    expect(await select("can you fix it in the code and open a branch")).toContain("code");
+    expect(await select("refactor the chat store")).toContain("code");
+    expect(await select("how is [rye:code-session:cs_123] doing?")).toContain("code");
+    expect(await select("why is checkout slow right now")).not.toContain("code");
+    expect(resolveGroupNames(groups, ["code"]).enabled).toEqual(["code"]);
+  });
+
   test("keeps previously enabled groups and drops unknown ones", async () => {
     expect((await select("thanks", { previouslyEnabled: ["aws", "gone"] }))).toEqual(["aws"]);
   });

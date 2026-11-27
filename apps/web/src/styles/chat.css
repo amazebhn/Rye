@@ -178,6 +178,8 @@
   flex-direction: column;
   align-items: center;
   background: var(--main-bg);
+  /* Its width decides where the names go (Hanging names, below). */
+  container: message-list / inline-size;
 }
 
 .message-list-content {
@@ -365,6 +367,24 @@
 .message-role.assistant {
   color: var(--main-fg-muted);
   text-align: left;
+}
+
+/* Hanging names: with room either side of the 720px column, the names ("Rye", an agent's picture, "You")
+   hang in the margin, so a reply's text and the user's bubbles span the same 720px as the composer and sit
+   centred over it. Narrower, they stay inside the row as before (and go above messages on a phone). */
+@container message-list (min-width: 880px) {
+  .message-row { position: relative; }
+  .message-row > .message-role {
+    position: absolute;
+    top: 0;
+    right: calc(100% + 12px);
+    text-align: right;
+  }
+  .message-row.user > .message-role {
+    right: auto;
+    left: calc(100% + 12px);
+    text-align: left;
+  }
 }
 
 .message-body {
@@ -1463,6 +1483,161 @@ svg.link-chip-icon {
 .attachment-remove:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
 .attachment-chips--composer { padding: 2px 2px 4px; }
 
+/* A quote (QuoteChip): a slim one-line pill; hovering or focusing it shows the whole excerpt in a card
+   above it (below it on a sent message). */
+.quote-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(320px, 100%);
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--main-border);
+  border-radius: var(--radius-pill);
+  background: var(--main-surface);
+  color: var(--main-fg);
+}
+.quote-pill-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 10px 0 9px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+}
+.quote-pill:has(.quote-pill-remove) .quote-pill-main { padding-right: 2px; }
+.quote-pill-main:focus-visible { outline: 2px solid var(--main-accent); outline-offset: 1px; }
+.quote-pill-icon { flex-shrink: 0; color: var(--main-fg-muted); }
+.quote-pill-label { flex-shrink: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.quote-pill-snippet { min-width: 0; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; color: var(--main-fg-muted); }
+.quote-pill-remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin: 0 3px 0 2px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--main-fg-muted);
+  cursor: pointer;
+}
+.quote-pill-remove:hover { color: var(--main-fg); background: var(--main-surface-alt); }
+.quote-pill-remove:focus-visible { outline: 2px solid var(--main-accent); outline-offset: -1px; }
+.attachment-quote-pop {
+  position: absolute;
+  /* Clear of the composer's top border, which sits just above the chips. */
+  bottom: calc(100% + 14px);
+  left: 0;
+  z-index: 30;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 32px));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-lg);
+  background: var(--sidebar-menu-bg);
+  box-shadow: var(--sidebar-menu-shadow);
+  color: var(--sidebar-menu-fg);
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease-out, visibility 0s linear 0.12s;
+}
+/* A bridge over the gap, so the pointer can move onto the excerpt and scroll it. */
+.attachment-quote-pop::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 16px; }
+.attachment-chip.is-quote:hover .attachment-quote-pop,
+.attachment-chip.is-quote:has(.quote-pill-main:focus-visible) .attachment-quote-pop {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0.15s, 0s;
+}
+.attachment-chips--message .attachment-quote-pop { bottom: auto; top: calc(100% + 6px); left: auto; right: 0; }
+.attachment-chips--message .attachment-quote-pop::after { top: auto; bottom: 100%; height: 8px; }
+.attachment-quote-pop-head { font-size: 12px; color: var(--main-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-quote-pop-text {
+  /* About eight lines, then it scrolls. */
+  max-height: calc(8 * 1.45em);
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--main-fg);
+}
+.attachment-quote-pop-text.is-code { font-family: 'Fira Code', 'Menlo', monospace; font-size: 12px; white-space: pre; overflow-wrap: normal; }
+@media (prefers-reduced-motion: reduce) { .attachment-quote-pop { transition: none; } }
+
+/* SelectionActions: the small floating bar of icon buttons under a text selection. */
+.selection-actions {
+  position: fixed;
+  z-index: 850;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--sidebar-menu-border);
+  border-radius: var(--radius-lg);
+  background: var(--sidebar-menu-bg);
+  box-shadow: var(--sidebar-menu-shadow);
+  color: var(--sidebar-menu-fg);
+  user-select: none;
+  -webkit-user-select: none;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .selection-actions { animation: selection-actions-in 0.12s ease-out; }
+  .selection-actions[data-placement="below"] { animation-name: selection-actions-in-below; }
+}
+@keyframes selection-actions-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes selection-actions-in-below { from { opacity: 0; transform: translateY(-4px) scale(0.98); } to { opacity: 1; transform: none; } }
+.selection-actions-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-menu-fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.selection-actions-btn > svg { flex-shrink: 0; width: 16px; height: 16px; stroke-width: 1.8; }
+.selection-actions-btn:hover,
+.selection-actions-btn:focus { background: var(--sidebar-menu-hover); outline: none; }
+.selection-actions-btn:focus-visible { outline: 2px solid var(--sidebar-menu-focus); outline-offset: -2px; }
+.selection-actions-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .mic-btn {
   width: 32px;
   height: 32px;
@@ -2058,6 +2233,22 @@ button.timeline-step-head:hover,
   font-size: 15px;
 }
 
+/* "compact": the shared composer tightened for a small card (the quick chat): on the card's 8px inset with
+   no rule above it, full width, and a tighter box (text 16px in: 8px + 1px border + 7px; one line to start).
+   Doubled class so the phone block's .input-bar-wrap padding doesn't win. */
+.input-bar-wrap.input-bar-wrap--compact {
+  padding: 0 8px 8px;
+  border-top: 0;
+  background: transparent;
+}
+.input-bar-wrap--compact .input-bar { max-width: none; }
+.input-bar-wrap--compact .input-box {
+  padding: 8px 8px 6px 7px;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xs);
+}
+.input-bar-wrap--compact .chat-input { min-height: 1.5em; max-height: 120px; padding-left: 0; }
+
 .chat-examples { display: flex; flex-direction: column; gap: 12px; }
 .chat-examples-head {
   display: flex;
@@ -2535,6 +2726,22 @@ button.timeline-step-head:hover,
   .icon-btn.message-action { opacity: 1; }
 }
 
+/* A reply's copy and info buttons stay on the latest reply only; earlier replies show them on hover or
+   keyboard focus (touch screens, which can't hover, keep them everywhere). */
+@media (hover: hover) {
+  .message-row:not(.user):not(.is-latest-reply) .icon-btn.copy,
+  .message-row:not(.user):not(.is-latest-reply) .message-info {
+    opacity: 0;
+    transition: opacity 0.15s, background 0.2s;
+  }
+  .message-row:not(.user):not(.is-latest-reply):hover .icon-btn.copy,
+  .message-row:not(.user):not(.is-latest-reply):hover .message-info,
+  .message-row:not(.user):not(.is-latest-reply):focus-within .icon-btn.copy,
+  .message-row:not(.user):not(.is-latest-reply):focus-within .message-info {
+    opacity: 1;
+  }
+}
+
 /* Message details: info button with a hover/focus card */
 .message-info {
   position: relative;
@@ -2785,6 +2992,8 @@ button.timeline-step-head:hover,
    16px gutters for the header, messages and composer; the name above each message instead of
    beside it, so a reply uses the full width; tables and code scroll inside their own frame. */
 @media (max-width: 767px) {
+  /* The selection bar: finger-sized icon buttons. */
+  .selection-actions-btn { min-width: 36px; height: 36px; }
   .chat-header {
     padding: 6px 10px 6px 16px;
     gap: 4px;

@@ -13,7 +13,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { PendingPrompt, PromptType } from "@rye/shared";
+import type { ChatKind, PendingPrompt, PromptType } from "@rye/shared";
 import { DATA_DIR } from "../config.js";
 import { embedBatchLocal, embedQueryLocal, embedTextLocal, type EmbeddingResult } from "../embeddings/index.js";
 import { VectorIndex, blobToVector, quantise, standsOut, vectorToBlob } from "../embeddings/vector-index.js";
@@ -79,6 +79,13 @@ export interface ChatHistoryRecord {
   folderId?: string;
   folderSuggestionDismissed?: boolean;
   agentId?: string;
+  /**
+   * What the chat is (`chats.kind`); absent means `chat`. Server-owned like the folder fields: set
+   * by `createKindChat` (the `/code/` routes), never by a client save, which keeps the stored value.
+   */
+  kind?: ChatKind;
+  /** Server-owned: the chat a code session was started from (`chats.parent_chat_id`). */
+  parentChatId?: string;
 }
 
 /** A chat without its messages, for listings. */
@@ -156,6 +163,9 @@ interface ChatRow {
   folder_suggestion_dismissed: number;
   agent_id: string | null;
   message_count: number;
+  // Added by `addKindColumns`; absent only in a database that predates them.
+  kind?: string | null;
+  parent_chat_id?: string | null;
 }
 
 function rowToSummary(row: ChatRow): ChatSummary {
@@ -179,6 +189,8 @@ function rowToSummary(row: ChatRow): ChatSummary {
     folderId: row.folder_id ?? undefined,
     folderSuggestionDismissed: row.folder_suggestion_dismissed ? true : undefined,
     agentId: row.agent_id ?? undefined,
+    ...(row.kind && row.kind !== "chat" ? { kind: row.kind as ChatKind } : {}),
+    ...(row.parent_chat_id ? { parentChatId: row.parent_chat_id } : {}),
     messageCount: row.message_count,
   };
 }
@@ -313,6 +325,7 @@ export class ChatStore {
         DELETE FROM message_vectors_prev WHERE message_id = old.id;
       END;
     `);
+    this.addKindColumns();
     this.embedders = embedders;
     // Once per index version. Chats imported from the old file further down are indexed as they are written.
     if (this.meta("search_index") !== SEARCH_INDEX_VERSION) {
@@ -336,6 +349,17 @@ export class ChatStore {
         console.error(`[${new Date().toISOString()}] [chat] could not import ${legacyJsonPath}: ${report.error}. The file was not changed; it will be tried again on the next start.`);
       }
     }
+  }
+
+  /**
+   * `chats.kind` and `chats.parent_chat_id` (docs/design/code-sessions.md §4.1), added to a database
+   * that predates them. Additive only: `ALTER TABLE … ADD COLUMN` behind a `PRAGMA table_info` check;
+   * existing rows read as NULL, which means a plain chat.
+   */
+  private addKindColumns(): void {
+    const have = new Set((this.db.query("PRAGMA table_info(chats)").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!have.has("kind")) this.db.exec("ALTER TABLE chats ADD COLUMN kind TEXT");
+    if (!have.has("parent_chat_id")) this.db.exec("ALTER TABLE chats ADD COLUMN parent_chat_id TEXT");
   }
 
   close(): void {
@@ -645,12 +669,52 @@ export class ChatStore {
   upsert(raw: unknown): ChatHistoryRecord | null {
     const parsed = normalizeChat(raw);
     if (!parsed || this.isDeleted(parsed.id)) return null;
-    const detailsOnly = !(isObject(raw) && Array.isArray(raw.messages));
+    const kind = this.kindFields(parsed.id);
+    // A chat of another kind (a code session) has its messages written by the server only.
+    const detailsOnly = kind.kind !== undefined || !(isObject(raw) && Array.isArray(raw.messages));
     const stored = detailsOnly ? this.get(parsed.id) : null;
-    const chat = { ...parsed, ...(stored ? { messages: stored.messages } : {}), ...this.folderFields(parsed.id) };
+    const chat = { ...parsed, ...(stored ? { messages: stored.messages } : {}), ...this.folderFields(parsed.id), ...kind };
     this.db.transaction(() => this.write(chat))();
     return chat;
   }
+
+  /** The stored kind fields (server-owned); empty for a plain chat or one that doesn't exist. */
+  kindFields(id: string): Pick<ChatHistoryRecord, "kind" | "parentChatId"> {
+    const row = this.db.query("SELECT kind, parent_chat_id FROM chats WHERE id = ?").get(id) as { kind: string | null; parent_chat_id: string | null } | null;
+    return {
+      ...(row?.kind && row.kind !== "chat" ? { kind: row.kind as ChatKind } : {}),
+      ...(row?.parent_chat_id ? { parentChatId: row.parent_chat_id } : {}),
+    };
+  }
+
+  /**
+   * Create a chat of another kind (a code session's chat), with its kind fields. Only the server
+   * calls this; client saves can't set or change a chat's kind.
+   */
+  createKindChat(record: ChatHistoryRecord, fields: { kind: ChatKind; parentChatId?: string }): ChatHistoryRecord | null {
+    const parsed = normalizeChat(record);
+    if (!parsed || this.isDeleted(parsed.id)) return null;
+    this.db.transaction(() => {
+      this.write(parsed);
+      this.db.query("UPDATE chats SET kind = ?, parent_chat_id = ? WHERE id = ?").run(fields.kind, fields.parentChatId ?? null, parsed.id);
+    })();
+    return { ...parsed, ...(fields.kind !== "chat" ? { kind: fields.kind } : {}), ...(fields.parentChatId ? { parentChatId: fields.parentChatId } : {}) };
+  }
+
+  /** Append one message to a stored chat (the server writing a code chat's user message). */
+  appendMessage(id: string, message: unknown, updatedAt = Date.now()): ChatHistoryRecord | null {
+    const stored = this.get(id);
+    if (!stored || this.isDeleted(id)) return null;
+    const chat = { ...stored, messages: [...stored.messages, message], updatedAt: Math.max(updatedAt, stored.updatedAt + 1) };
+    this.db.transaction(() => this.write(chat))();
+    return chat;
+  }
+
+  /**
+   * Called by `remove` with the stored chat when it is of another kind, before it is deleted: for a
+   * code chat the kind archives its session (never deletes work). Set by the server.
+   */
+  onRemoveKind: ((chat: ChatHistoryRecord) => void) | null = null;
 
   /**
    * Save several chats at once. Chats not in the list are left alone: only
@@ -664,7 +728,10 @@ export class ChatStore {
         const parsed = normalizeChat(raw);
         if (!parsed || seen.has(parsed.id) || this.isDeleted(parsed.id)) continue;
         seen.add(parsed.id);
-        const chat = { ...parsed, ...this.folderFields(parsed.id) };
+        const kind = this.kindFields(parsed.id);
+        // Server-written messages (a code chat's) are kept, whatever the client sent.
+        const stored = kind.kind !== undefined ? this.get(parsed.id) : null;
+        const chat = { ...parsed, ...(stored ? { messages: stored.messages } : {}), ...this.folderFields(parsed.id), ...kind };
         this.write(chat);
         saved.push(chat);
       }
@@ -694,6 +761,15 @@ export class ChatStore {
 
   /** Delete a chat for good. Returns whether it existed; either way the id can't be saved again. */
   remove(id: string): boolean {
+    const hook = this.onRemoveKind;
+    if (hook && this.kindFields(id).kind !== undefined) {
+      const stored = this.get(id);
+      try {
+        if (stored) hook(stored);
+      } catch (err) {
+        console.error(`[${new Date().toISOString()}] [chat] removing chat ${id}: its kind's cleanup failed:`, err);
+      }
+    }
     let existed = false;
     this.db.transaction(() => {
       this.db.query("INSERT OR IGNORE INTO deleted_chats (id, deleted_at) VALUES (?, ?)").run(id, Date.now());

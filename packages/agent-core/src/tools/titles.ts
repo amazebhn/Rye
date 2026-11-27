@@ -71,6 +71,9 @@ export const TOOL_TITLES: Record<string, string> = {
   add_mcp_server_tool: "Add an MCP server",
   set_model_pricing_tool: "Set model pricing",
   get_model_pricing_tool: "Get model pricing",
+  // Code sessions
+  start_code_session_tool: "Start code session",
+  code_session_status_tool: "Check a code session",
   // Run by the Claude harness itself
   WebSearch: "Search the web",
   WebFetch: "Fetch a web page",
@@ -117,6 +120,7 @@ export const GROUP_TITLES: Record<string, string> = {
   artifacts: "Files",
   custom_tools: "Custom tools",
   admin: "Admin",
+  code: "Code sessions",
 };
 
 /** A group's title. An MCP server's group ("mcp:grafana") is "MCP · grafana"; the server's own name is kept as written. */

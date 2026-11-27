@@ -98,6 +98,19 @@ describe("tool availability per environment", () => {
     for (const id of ["core", "results", "chats", "artifacts"]) expect(groupAvailability(id, input("prod")).state).toBe("ready");
   });
 
+  test("code sessions: off without allowed repos or when disabled, ready with repos that exist, the same in every environment", () => {
+    const withCode = (code: Partial<Settings["code"]>): AvailabilityInput => ({ ...input("prod"), settings: { ...settings, code: { ...settings.code, enabled: true, repos: [], ...code } } });
+    expect(groupAvailability("code", withCode({}))).toMatchObject({ state: "off", reason: expect.stringContaining("[[code.repos]]") });
+    const here = { name: "rye", path: process.cwd().replace(/\/packages\/agent-core$/, ""), isolation: "clone" as const, setup: [], checks: [], base: "main" };
+    const gone = { name: "gone", path: "/nonexistent/repo", isolation: "clone" as const, setup: [], checks: [] };
+    expect(groupAvailability("code", withCode({ repos: [here], enabled: false })).state).toBe("off");
+    expect(groupAvailability("code", withCode({ repos: [gone] })).state).toBe("off");
+    const partial = groupAvailability("code", withCode({ repos: [here, gone] }));
+    expect(partial.state).toBe("partial");
+    expect(partial.items?.map((i) => [i.name, i.state])).toEqual([["rye", "ready"], ["gone", "off"]]);
+    expect(groupAvailability("code", withCode({ repos: [here] }))).toMatchObject({ state: "ready", reason: "1 repository: rye." });
+  });
+
   test("MCP servers: connected, off, failing, waiting for sign-in, and listed even without tools", () => {
     const servers: McpServerState[] = [
       { name: "grafana", disabled: false, connected: true, toolCount: 1, problems: [] },

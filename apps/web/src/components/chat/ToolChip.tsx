@@ -21,6 +21,7 @@ import {
 import { isToolError, toolDetail, toolLabel } from "../../utils/toolLabel";
 import ResultTable from "../results/ResultTable";
 import { ARTIFACT_MARKER_ALL } from "../artifacts/ArtifactCard";
+import { CODE_SESSION_MARKER_ALL } from "../code/CodeSessionCard";
 import Collapse from "../shared/Collapse";
 import InlineMarkdown from "./InlineMarkdown";
 
@@ -124,7 +125,7 @@ interface ResultProps {
 
 function ToolResult({ tc, sessionId, onNewChat }: ResultProps) {
   // The artifact marker is for the UI; the card under the reply renders it.
-  const result = (tc.result ?? "").replace(ARTIFACT_MARKER_ALL, "");
+  const result = (tc.result ?? "").replace(ARTIFACT_MARKER_ALL, "").replace(CODE_SESSION_MARKER_ALL, "");
   const storedResultId = result.match(RESULT_MARKER)?.[1];
   // The marker text is for the model; the user gets the real table instead.
   if (storedResultId) return <ResultTable resultId={storedResultId} sessionId={sessionId} />;

@@ -71,6 +71,19 @@
   --main-warning-bg:     #fdf1e1;
   --main-warning-text:   #956400;
 
+  /* Code diffs (components/code/DiffView): line and gutter tints, the +/− sign, line numbers on a tinted
+     gutter, and the ± counts on plain surfaces. Text on the tints and every sign/number clear 4.5:1. */
+  --diff-add-bg:         #e7f5ec;
+  --diff-add-gutter:     #d5eedd;
+  --diff-add-sign:       #116329;
+  --diff-add-num:        #3d6b4c;
+  --diff-add-fg:         #11743a;
+  --diff-del-bg:         #fdecea;
+  --diff-del-gutter:     #f9dcd8;
+  --diff-del-sign:       #a4251d;
+  --diff-del-num:        #8a3b35;
+  --diff-del-fg:         #b42318;
+
   /* Approval prompt choices */
   --main-approve-selected: #24231f;
   --main-deny-fg:          #9f3f3b;
@@ -182,6 +195,18 @@
   --main-ai-accent:      #9395f5;
   --main-warning-text:   #e3b15e;
 
+  /* Code diffs */
+  --diff-add-bg:         #1c3324;
+  --diff-add-gutter:     #234030;
+  --diff-add-sign:       #7ee2a0;
+  --diff-add-num:        #a9d9b8;
+  --diff-add-fg:         #6fd69a;
+  --diff-del-bg:         #3b2120;
+  --diff-del-gutter:     #4a2826;
+  --diff-del-sign:       #ff9a91;
+  --diff-del-num:        #e6b3ae;
+  --diff-del-fg:         #f58b82;
+
   /* Approval prompt choices */
   --main-approve-selected: #ffffff;
   --main-deny-fg:          #ee9a94;
@@ -245,4 +270,7 @@ html,
 body {
     margin: 0;
     padding: 0;
+    /* The app is a fixed frame: the page itself never rubber-bands (macOS, iOS). Scroll areas inside it,
+       such as the chat's message list, keep their own elastic overscroll. */
+    overscroll-behavior: none;
 }

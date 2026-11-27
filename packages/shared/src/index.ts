@@ -2,6 +2,10 @@
  * Shared types for Rye agent communication.
  */
 
+import type { CodeSessionStatus } from "./code";
+
+export * from "./code";
+
 export interface ChatMessage {
   role: "user" | "assistant" | "tool";
   content: string;
@@ -22,11 +26,18 @@ export interface PendingPrompt {
   question: string;
   options?: string[];
   multiSelect?: boolean; // choice prompts only
+  /**
+   * A code session's live prompt: the run is still going and waits for the answer, which is
+   * posted to `POST /code/sessions/:id/approvals/:promptId` instead of sent as the next message.
+   */
+  live?: true;
 }
 
 export type SSEEvent = {
-  type: "session" | "agent" | "agent_turn_start" | "token" | "iter_start" | "tool_start" | "tool_result" | "usage" | "done" | "pause" | "prompt" | "iter_summary" | "error" | "sop_draft" | "env_changed";
+  type: "session" | "agent" | "agent_turn_start" | "token" | "iter_start" | "tool_start" | "tool_result" | "usage" | "done" | "pause" | "prompt" | "iter_summary" | "error" | "sop_draft" | "env_changed" | "code_status";
   session_id?: string;
+  /** Code sessions: the event's sequence number in the session's event log (also the SSE frame's `id:`). */
+  seq?: number;
   content?: string;
   error?: string;
   // agent fields
@@ -48,6 +59,16 @@ export type SSEEvent = {
   question?: string;
   options?: string[];
   multi_select?: boolean;
+  /**
+   * A code session's live prompt: unlike other prompts it does not end the run. Answer it with
+   * `POST /code/sessions/:id/approvals/:prompt_id`; unanswered, it is denied after
+   * `approval_timeout_minutes`.
+   */
+  live?: true;
+  // code_status fields: the branch, ahead/behind, dirty state, diffstat or checks changed, so
+  // the workspace panels refetch.
+  code_session_id?: string;
+  code_status?: CodeSessionStatus;
   // pause fields: the tool-round limit that was reached
   rounds?: number;
   // sop_draft fields

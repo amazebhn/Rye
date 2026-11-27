@@ -54,6 +54,7 @@ import type { ScriptApprovalToken } from "../skill/script-approval.js";
 import { chatTools, readChatForAgent, searchChatsForAgent } from "./chats.js";
 import type { ChatStore } from "../chat/store.js";
 import { attachmentTools, readAttachmentForAgent } from "./attachments.js";
+import { CODE_TOOL_NAMES, START_CODE_SESSION_TOOL_NAME, codeSessionStatusForAgent, codeTools, codeToolsEnabled } from "./code.js";
 import type { AttachmentStore } from "../chat/attachments.js";
 
 let _attachmentStore: AttachmentStore | undefined;
@@ -158,6 +159,7 @@ const STATIC_TOOLS: Tool[] = [
   ...artifactTools,
   ...chatTools,
   ...attachmentTools,
+  ...codeTools,
   {
     name: "save_sop_tool",
     description:
@@ -287,7 +289,9 @@ const STATIC_TOOLS: Tool[] = [
 // Returns all tools including currently-active custom tools.
 // Called by the agent loop on each run so newly-installed tools are visible.
 export function getTools(): Tool[] {
-  return [...STATIC_TOOLS, ...getCustomToolDefs(), ...getMcpToolDefs()];
+  // The code-session tools exist only while [code] allows a repo, so nothing changes for anyone else.
+  const builtIn = codeToolsEnabled() ? STATIC_TOOLS : STATIC_TOOLS.filter((t) => !CODE_TOOL_NAMES.has(t.name));
+  return [...builtIn, ...getCustomToolDefs(), ...getMcpToolDefs()];
 }
 
 // Keep TOOLS as a compat alias for code that reads it statically (e.g. subagent.ts)
@@ -468,6 +472,14 @@ export async function executeTool(
     case "read_attachment_tool":
       if (!_attachmentStore) return "Attachments are not available.";
       result = readAttachmentForAgent(_attachmentStore, args as { id: string; offset?: number; length?: number });
+      break;
+
+    // Code sessions. start_code_session_tool is handled by the agent loop (it asks the user first);
+    // reaching here means a caller that can't ask (a subagent), so nothing is started.
+    case START_CODE_SESSION_TOOL_NAME:
+      return "start_code_session_tool needs the user's approval and only works in the main conversation. Nothing was started.";
+    case "code_session_status_tool":
+      result = await codeSessionStatusForAgent(args);
       break;
 
     // Knowledge Base (RAG)

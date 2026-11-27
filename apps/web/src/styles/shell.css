@@ -9,6 +9,22 @@
   overflow: hidden;
   background: var(--color-bg);
 }
+/* Desktop collapse/expand: the sidebar slides in from the left edge (its contents keep their width, so
+   nothing reflows) while the chat eases over beside it; collapsing runs it backwards, then App unmounts it. */
+.sidebar.is-entering { animation: sidebar-slide-in 0.2s cubic-bezier(0.2, 0, 0, 1); }
+.sidebar.is-leaving { animation: sidebar-slide-out 0.16s cubic-bezier(0.3, 0, 0.8, 0.15) forwards; }
+@keyframes sidebar-slide-in {
+  from { margin-left: calc(-18rem - 1px); }
+  to { margin-left: 0; }
+}
+@keyframes sidebar-slide-out {
+  from { margin-left: 0; }
+  to { margin-left: calc(-18rem - 1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar.is-entering,
+  .sidebar.is-leaving { animation: none; }
+}
 
 .sidebar-header {
   padding: 10px 8px 6px;
@@ -1066,7 +1082,8 @@
 
 .status-tooltip {
   position: fixed;
-  z-index: 100;
+  /* The hover-card layer (with .message-info-card): over floating panels and the phone drawer. */
+  z-index: 400;
   transform: translateY(-100%);
   background: var(--color-surface);
   border: 1px solid var(--color-border);

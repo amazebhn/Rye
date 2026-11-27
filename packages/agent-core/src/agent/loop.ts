@@ -55,7 +55,15 @@ import type { SkillStore } from "../skill/store.js";
 import { MemoryStore } from "../memory/store.js";
 import { meaningfulTokens } from "../knowledge/store.js";
 import type { KnowledgeSearchHit, KnowledgeStore } from "../knowledge/store.js";
-import { attachTurnContext, buildTurnContext, previousUserText, shownChunkKeys, stripTurnContext } from "./turn-context.js";
+import {
+  attachTurnContext,
+  buildTurnContext,
+  markSpeaker,
+  previousUserText,
+  shownChunkKeys,
+  speakersNote,
+  stripTurnContext,
+} from "./turn-context.js";
 import type { AgentDefinition } from "../agents/store.js";
 import { readUserProfile, userPromptLine } from "../profile/store.js";
 import { UsageStore } from "../usage/store.js";
@@ -82,6 +90,14 @@ import {
   prepareMcpServerAddition,
   resolvePendingMcpServerAddition,
 } from "../tools/mcp-manager.js";
+import {
+  CANCEL_CODE_SESSION,
+  START_CODE_SESSION,
+  START_CODE_SESSION_TOOL_NAME,
+  clearPendingCodeSessionStart,
+  prepareCodeSessionStart,
+  resolvePendingCodeSessionStart,
+} from "../tools/code.js";
 import { getRunContext } from "../run-context.js";
 import { RUN_SKILL_SCRIPT_TOOL_NAME, formatApprovalQuestion, planScriptRun, type ScriptPlan } from "../skill/runner.js";
 import {
@@ -240,7 +256,7 @@ import { mightBeWrittenToolCall, parseWrittenToolCalls, toToolCalls } from "./te
 import { attachmentsForModel, mentionsAttachments, withoutImages } from "./attachments.js";
 import type { Attachment, AttachmentStore } from "../chat/attachments.js";
 import { READ_ATTACHMENT_TOOL } from "../tools/attachments.js";
-import { referencesForModel, type ContextRef } from "./references.js";
+import { referencesForModel, refLogName, type ContextRef } from "./references.js";
 
 const SESSIONS_DIR = join(DATA_DIR, "sessions");
 
@@ -362,6 +378,7 @@ export function rewindSession(
   clearPendingApproval(sessionId);
   clearScriptApprovals(sessionId);
   clearPendingMcpServerAddition(sessionId);
+  clearPendingCodeSessionStart(sessionId);
 
   const history = getSession(sessionId) as TaggedMessage[];
   const keptIds = new Set(kept.flatMap((t) => (t.role === "user" && t.id ? [t.id] : [])));
@@ -404,26 +421,40 @@ export async function generateChatTitle(
   userMessage: string,
   assistantResponse: string
 ): Promise<string> {
-  const settings = getSettings();
-  const model = await resolveModel(settings, await resolveTaskModelId(settings, "labels"));
-  const apiKey = await apiKeyFor(model);
+  return (await suggestTitle(userMessage, { assistantResponse })) ?? userMessage.slice(0, 60);
+}
 
-  const prompt =
-    `User message: ${userMessage.slice(0, 300)}\n\n` +
-    `Assistant response: ${assistantResponse.slice(0, 300)}\n\n` +
-    `Write a title for this conversation in 3-6 words. No punctuation, no quotes, title case. Just the title.`;
-
+/**
+ * A short title from the "Titles & step labels" task model, or null when it gives none (no model, an
+ * error, an empty answer, or `signal` aborted). `generateChatTitle` names chats with it; code sessions
+ * (code/service.ts) name a new session with their own `instruction` and the repo as `context`.
+ */
+export async function suggestTitle(
+  userMessage: string,
+  opts: { assistantResponse?: string; context?: string; instruction?: string; signal?: AbortSignal } = {}
+): Promise<string | null> {
   try {
+    const settings = getSettings();
+    const model = await resolveModel(settings, await resolveTaskModelId(settings, "labels"));
+    const apiKey = await apiKeyFor(model);
+    if (opts.signal?.aborted) return null;
+
+    const prompt =
+      (opts.context ? `${opts.context.slice(0, 200)}\n\n` : "") +
+      `User message: ${userMessage.slice(0, 300)}\n\n` +
+      (opts.assistantResponse !== undefined ? `Assistant response: ${opts.assistantResponse.slice(0, 300)}\n\n` : "") +
+      (opts.instruction ?? `Write a title for this conversation in 3-6 words. No punctuation, no quotes, title case. Just the title.`);
     const ctx: Context = {
       systemPrompt: "You generate short conversation titles. Output only the title, nothing else.",
       messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
     };
-    const result = await models.complete(model, ctx, { apiKey });
+    const result = await models.complete(model, ctx, { apiKey, ...(opts.signal ? { signal: opts.signal } : {}) });
+    if (opts.signal?.aborted) return null;
     const textBlock = (result as AssistantMessage).content.find((b) => b.type === "text");
     const text = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
-    return text.replace(/^["'.]|["'.]$/g, "").slice(0, 80) || userMessage.slice(0, 60);
+    return text.replace(/^["'.]|["'.]$/g, "").slice(0, 80) || null;
   } catch {
-    return userMessage.slice(0, 60);
+    return null;
   }
 }
 
@@ -690,6 +721,16 @@ export async function* runAgent(
   }
   const mcpConfigDecision = await resolvePendingMcpServerAddition(sessionId, userMessage);
   if (mcpConfigDecision) log("info", mcpConfigDecision);
+  // This turn may be the user answering "Start a code session …?" (start_code_session_tool).
+  const codeStart = await resolvePendingCodeSessionStart(sessionId, userMessage);
+  if (codeStart) {
+    log("info", `code session proposal answered: ${codeStart.note.slice(0, 120)}`);
+    // The started session shows in this chat as a tool call whose result carries its card marker.
+    if (codeStart.call) {
+      yield { type: "tool_start", name: START_CODE_SESSION_TOOL_NAME, args: codeStart.call.args };
+      yield { type: "tool_result", name: START_CODE_SESSION_TOOL_NAME, content: codeStart.call.result };
+    }
+  }
 
   // Make stores available to tool implementations
   setMemoryStore(memoryStore);
@@ -769,7 +810,7 @@ export async function* runAgent(
   // SOPs and tools the user picked for this message. A low-context agent's tool set stays fixed.
   const referenced = referencesForModel(refs ?? [], { sops: sopStore, toolGroups });
   if (!leanAgent) for (const g of referenced.groups) if (g !== CORE_GROUP) enabledGroups.add(g);
-  if (refs?.length) log("info", `user referenced ${refs.map((r) => (r.type === "sop" ? `sop ${r.id}` : r.name)).join(", ")}`);
+  if (refs?.length) log("info", `user referenced ${refs.map(refLogName).join(", ")}`);
   if (!leanAgent) rememberToolGroups(sessionId, enabledGroups);
   log("info", `tool groups: ${[...(leanAgent ? [] : [CORE_GROUP]), ...enabledGroups].join(", ") || "none"}${leanAgent ? " (low-context agent)" : ""}`);
 
@@ -779,7 +820,7 @@ export async function* runAgent(
     const desc = agent.description ? `\n_${agent.description}_\n` : "\n";
     systemPrompt += skipBase
       ? `You are ${agent.name} (@${agent.slug}).${desc}\n${agent.instructions}`
-      : `\n\n---\n## Active Agent Persona: ${agent.name} (@${agent.slug})${desc}\nFollow these specialized instructions for this conversation while still adhering to Rye's evidence and tool-use discipline:\n\n${agent.instructions}`;
+      : `\n\n---\n## Active Agent Persona: ${agent.name} (@${agent.slug})${desc}\nFor this reply you are ${agent.name}, one of the agents in Rye, not Rye itself: answer as ${agent.name}, in its voice, and if asked who you are, say you are ${agent.name}. Rye's evidence and tool-use discipline above still applies. ${agent.name}'s instructions:\n\n${agent.instructions}`;
 
     // Resolve explicit [[sop:id|title]], [[skill:name]], and [[knowledge:id|title]] tags pinned in instructions
     const pinnedNotes: string[] = [];
@@ -903,9 +944,14 @@ export async function* runAgent(
   if (attachments?.items.length) {
     log("info", `${attachments.items.length} attachment(s); ${attached.images.length} image(s) sent${model.input.includes("image") ? "" : " (model can't see images)"}`);
   }
+  // Who is speaking this turn; stamped on its replies (persist below) and used to tell earlier speakers apart.
+  const speaker = agent ? `${agent.name} (@${agent.slug})` : "Rye";
+  const earlierSpeakers = speakersNote(history, speaker);
   const turnContext = buildTurnContext({
     notes: [
+      ...(earlierSpeakers ? [earlierSpeakers] : []),
       ...(mcpConfigDecision ? [`**MCP configuration result:** ${mcpConfigDecision}\nReport this result clearly to the user.`] : []),
+      ...(codeStart ? [codeStart.note] : []),
       ...(attached.note ? [attached.note] : []),
       ...(referenced.note ? [referenced.note] : []),
     ],
@@ -925,6 +971,9 @@ export async function* runAgent(
     messages,
     tools: leanAgent ? toolsForExactGroups(toolGroups, enabledGroups) : toolsForGroups(toolGroups, enabledGroups),
   };
+  // Every save of this turn stamps its replies with the speaker (turn-context.ts markSpeaker).
+  const earlierMessages: ReadonlySet<Message> = new Set(history);
+  const persist = () => saveSession(sessionId, markSpeaker(context.messages, earlierMessages, speaker));
   const enableGroups = (ids: string[]) => {
     // A low-context agent's tool set is fixed.
     if (leanAgent) return;
@@ -954,7 +1003,7 @@ export async function* runAgent(
   const finishCancelled = () => {
     closeOrphanToolCalls(context.messages);
     context.messages.push({ role: "user", content: CANCELLED_NOTE, timestamp: Date.now() });
-    saveSession(sessionId, context.messages);
+    persist();
     log("info", `session=${sessionId} stopped by the user`);
   };
 
@@ -1298,7 +1347,7 @@ export async function* runAgent(
           isError: false,
           timestamp: Date.now(),
         });
-        saveSession(sessionId, context.messages);
+        persist();
         yield { type: "tool_result", name: block.name, content: placeholderText };
         yield {
           type: "prompt",
@@ -1306,6 +1355,45 @@ export async function* runAgent(
           prompt_type: "choice",
           question: prepared.question,
           options: [CONFIRM_ADD_MCP_SERVER, CANCEL_ADD_MCP_SERVER],
+        };
+        yield { type: "done", session_id: sessionId };
+        return;
+      }
+
+      // Starting a code session always asks first (docs/design/code-sessions.md §4.3): the model only
+      // proposes, and the user's next message (Start / Cancel) decides.
+      if (block.name === START_CODE_SESSION_TOOL_NAME) {
+        const prepared = prepareCodeSessionStart(sessionId, block.arguments as Record<string, unknown>);
+        if (!prepared.ok) {
+          const notice = `Code session not proposed: ${prepared.error}`;
+          yield { type: "tool_result", name: block.name, content: notice };
+          context.messages.push({
+            role: "toolResult",
+            toolCallId: block.id,
+            toolName: block.name,
+            content: [{ type: "text", text: notice }],
+            isError: true,
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+        const placeholderText = "[Awaiting the user's approval to start the code session]";
+        context.messages.push({
+          role: "toolResult",
+          toolCallId: block.id,
+          toolName: block.name,
+          content: [{ type: "text", text: placeholderText }],
+          isError: false,
+          timestamp: Date.now(),
+        });
+        persist();
+        yield { type: "tool_result", name: block.name, content: placeholderText };
+        yield {
+          type: "prompt",
+          prompt_id: crypto.randomUUID(),
+          prompt_type: "choice",
+          question: prepared.question,
+          options: [START_CODE_SESSION, CANCEL_CODE_SESSION],
         };
         yield { type: "done", session_id: sessionId };
         return;
@@ -1340,7 +1428,7 @@ export async function* runAgent(
           isError: false,
           timestamp: Date.now(),
         });
-        saveSession(sessionId, context.messages);
+        persist();
 
         log("info", `awaiting MCP approval for ${block.name} in session=${sessionId}`);
         yield { type: "tool_result", name: block.name, content: placeholderText };
@@ -1402,7 +1490,7 @@ export async function* runAgent(
             isError: false,
             timestamp: Date.now(),
           });
-          saveSession(sessionId, context.messages);
+          persist();
           log("info", `awaiting script approval for ${plan.skill}/${plan.script} in session=${sessionId}`);
           yield { type: "tool_result", name: block.name, content: placeholderText };
           yield {
@@ -1450,7 +1538,7 @@ export async function* runAgent(
         context.messages.push(toolResultMsg);
 
         // Persist session state NOW so the next runAgent call has the history
-        saveSession(sessionId, context.messages);
+        persist();
         log("info", `ask_user_tool — pausing session=${sessionId} promptId=${promptId}`);
 
         yield { type: "tool_result", name: block.name, content: placeholderText };
@@ -1625,7 +1713,7 @@ export async function* runAgent(
   }
 
   // Persist updated message history (include the original user message + all turns)
-  saveSession(sessionId, context.messages);
+  persist();
   log("info", `session=${sessionId} complete after ${iteration} iteration(s)`);
 
   // A reply that ends on the last allowed round is finished, not paused.

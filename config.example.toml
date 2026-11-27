@@ -228,6 +228,49 @@ file_excludes = [
 # path = "/absolute/path/to/shared-lib"
 
 # ---------------------------------------------------------------------------
+# Code sessions — a coding agent (Claude Code through the Agent SDK, or the
+# GitHub Copilot CLI over ACP) working in a sandboxed, Rye-owned clone of an
+# allowed repo, on a branch of its own.
+# Nothing appears in the app until at least one [[code.repos]] entry is listed:
+# being listed for code search does NOT allow code sessions. The agent never
+# touches your checkout, refs or remotes; only you (Create branch / Merge with
+# base) write anything back, and then only as a NEW rye/* branch.
+# See docs/design/code-sessions.md.
+# ---------------------------------------------------------------------------
+# [code]
+# enabled = true
+# engine = "claude"                 # "claude" | "acp:copilot"; "pi" later
+# model = ""                        # blank: claude.model (Claude), Copilot's own default (Copilot)
+# copilot_path = ""                 # the Copilot CLI; blank: `copilot` on PATH.
+#                                   # acp:copilot runs the whole CLI inside sandbox-runtime
+#                                   # (needs ripgrep; bubblewrap + socat on Linux). It signs in
+#                                   # with your Copilot login (`copilot`, then /login) or
+#                                   # COPILOT_GITHUB_TOKEN (a fine-grained token with only the
+#                                   # "Copilot Requests" permission); GH_TOKEN/GITHUB_TOKEN are
+#                                   # never passed to it.
+# worktree_root = ""                # blank: ~/.local/share/rye/code
+# max_sessions = 6                  # active sessions at once
+# archive_after_days = 14
+# approval_timeout_minutes = 30     # an unanswered approval is denied after this
+# max_turns = 200                   # per run; asks to continue
+# max_cost_usd = 5                  # per run; asks to continue
+# editor = "vscode"                 # vscode | cursor | zed | none
+#
+# [code.policy]                     # added to the built-in policy; its denials can't be removed
+# allowed_domains = []              # hosts reachable without asking (empty: no network)
+# allow = ["bun test *"]
+# ask = ["bun run dev *"]
+# deny = []
+#
+# [[code.repos]]
+# name = "my-service"
+# path = "~/Code/my-service"
+# base = "main"
+# isolation = "clone"
+# setup = ["bun install --frozen-lockfile"]
+# checks = ["bun test"]
+
+# ---------------------------------------------------------------------------
 # Skills — folders with a SKILL.md plus optional bundled files and scripts/.
 # Rye-owned skills live in ~/.local/share/rye/skills/<name>/ (editable in the app).
 # `dirs` lists READ-ONLY roots of installed skills (the `skills` CLI installs to

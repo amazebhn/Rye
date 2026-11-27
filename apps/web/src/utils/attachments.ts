@@ -55,15 +55,85 @@ export async function uploadAttachment(file: File): Promise<AttachmentRef> {
   return { id: json.id, name: json.name ?? file.name, kind: json.kind ?? "text", mime: json.mime ?? "", size: json.size ?? file.size, pages: json.pages ?? null };
 }
 
-/** An SOP or tool the user points a message at (the + menu's "Use an SOP" / "Use a tool"). */
+/** Where a quoted excerpt came from. `label` is what the chip shows ("fingerprint.js", "Rye's reply"). */
+export interface QuoteSource {
+  kind: "diff" | "message" | "document" | "other";
+  label: string;
+  path?: string;
+  lines?: { start: number; end: number };
+  side?: "old" | "new";
+}
+
+/** An excerpt the user selected somewhere and added to the chat (`SelectionActions`, `addContextToChat`). */
+export interface QuoteContextRef {
+  type: "quote";
+  text: string;
+  source: QuoteSource;
+}
+
+/**
+ * What the user points a message at: an SOP or tool (the + menu's "Use an SOP" / "Use a tool"),
+ * or a quote (text selected in a reply, a diff or a document; see utils/contextRefs.ts).
+ */
 export type ContextRef =
   | { type: "sop"; id: number; title: string }
-  | { type: "tool"; name: string; group?: string };
+  | { type: "tool"; name: string; group?: string }
+  | QuoteContextRef;
 
-export const refKey = (ref: ContextRef) => (ref.type === "sop" ? `sop:${ref.id}` : `tool:${ref.name}`);
+/** Characters of a quote kept (the server cuts at the same length). */
+export const QUOTE_CHARS = 4_000;
 
-/** What the server needs: no titles. */
-export const refForServer = (ref: ContextRef) => (ref.type === "sop" ? { type: "sop", id: ref.id } : { type: "tool", name: ref.name });
+/** The quote's text cut to `QUOTE_CHARS`, saying how much was left out. */
+export function capQuoteText(text: string): string {
+  if (text.length <= QUOTE_CHARS) return text;
+  return `${text.slice(0, QUOTE_CHARS)}\n...(cut: ${text.length - QUOTE_CHARS} more characters)`;
+}
+
+/** A short stable hash, so two quotes of different text never share a key. */
+function hashText(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+export const refKey = (ref: ContextRef): string => {
+  if (ref.type === "sop") return `sop:${ref.id}`;
+  if (ref.type === "tool") return `tool:${ref.name}`;
+  const { source } = ref;
+  const where = [source.kind, source.path ?? source.label, source.side ?? "", source.lines ? `${source.lines.start}-${source.lines.end}` : ""].join(":");
+  return `quote:${where}:${hashText(ref.text)}`;
+};
+
+/** What the server needs: no titles. A quote goes whole (its text is the point). */
+export const refForServer = (ref: ContextRef) => {
+  if (ref.type === "sop") return { type: "sop", id: ref.id };
+  if (ref.type === "tool") return { type: "tool", name: ref.name };
+  return { type: "quote", text: capQuoteText(ref.text), source: ref.source };
+};
+
+/** "L12–18" / "L12": the lines a quote covers, for its chip. */
+export function quoteLines(source: QuoteSource): string | null {
+  if (!source.lines) return null;
+  const { start, end } = source.lines;
+  return start === end ? `L${start}` : `L${start}–${end}`;
+}
+
+/** The chip's name for a quote: "fingerprint.js · L12–18", or the label and the text's first words. */
+export function quoteTitle(ref: QuoteContextRef): string {
+  const lines = quoteLines(ref.source);
+  if (lines) return `${ref.source.label} · ${lines}`;
+  return ref.source.label;
+}
+
+/** The first words of a quote, one line, for its chip. */
+export function quoteSnippet(text: string, max = 48): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+}
+
+/** The name of any ref, for a queued message's summary or a label. */
+export const refLabel = (ref: ContextRef): string =>
+  ref.type === "sop" ? ref.title : ref.type === "tool" ? ref.name : quoteTitle(ref);
 
 /** The refs of composer attachments that finished uploading. */
 export const readyRefs = (items: PendingAttachment[]): AttachmentRef[] =>

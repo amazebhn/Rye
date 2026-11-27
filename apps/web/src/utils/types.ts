@@ -1,4 +1,4 @@
-import type { PendingPrompt } from "@rye/shared";
+import type { ChatKind, PendingPrompt } from "@rye/shared";
 import type { AttachmentRef, ContextRef } from "./attachments";
 
 export interface StarterPrompt {
@@ -100,6 +100,13 @@ export interface ChatRecord {
   folderSuggestionDismissed?: boolean;
   agentId?: string; // dedicated 1:1 chat for a custom agent
   /**
+   * What the chat is; absent means `chat`. Server-owned like the folder fields: set when the chat
+   * is created through `/code/` routes and kept as stored on client saves.
+   */
+  kind?: ChatKind;
+  /** Server-owned: the chat a code session was started from (`start_code_session_tool`). */
+  parentChatId?: string;
+  /**
    * The chat's messages have not been fetched yet: `messages` is empty only because it is unknown.
    * A partial chat must never be saved with its `messages` (that would erase them on the server)
    * and must never be sent into; see chatSaveBody and the guards in App.tsx.
@@ -111,11 +118,12 @@ export interface ChatRecord {
 
 /**
  * What to PUT for a chat. A partial chat is saved without a `messages` key, which the server
- * reads as "update the details, keep the messages you have".
+ * reads as "update the details, keep the messages you have". So is a code chat, always: its
+ * messages are written by the server (the run is detached from any tab), never by a client.
  */
 export function chatSaveBody(chat: ChatRecord): Omit<ChatRecord, "partial" | "messageCount" | "messages"> & { messages?: RenderMessage[] } {
   const { partial, messageCount: _count, messages, ...details } = chat;
-  return partial ? details : { ...details, messages };
+  return partial || chat.kind === "code" ? details : { ...details, messages };
 }
 
 export interface AgentAvatar {

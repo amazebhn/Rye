@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { BarChart3, Blocks, Bot, Cpu, Plug, Plus, RotateCcw, ScanSearch, SlidersHorizontal, Wrench, Zap, type LucideIcon } from "lucide-react";
+import { BarChart3, Blocks, Bot, Cpu, Plug, Plus, RotateCcw, ScanSearch, SlidersHorizontal, SquareCode, Wrench, Zap, type LucideIcon } from "lucide-react";
+import CodeSettingsSection from "../code/CodeSettingsSection";
+import { CodeSetupSection } from "../code/CodeSetup";
+import { useCodeAvailable, useCodeSetup } from "../../utils/codeApi";
 import RetrievalSection from "./RetrievalSection";
 import ProviderLogo from "../shared/ProviderLogo";
 import { formatModelName, groupModelsByProvider } from "../../utils/modelNames";
@@ -106,7 +109,7 @@ type SaveStatus = "idle" | "saving" | "saved";
  * because several of them (skills, MCP servers) grow long. To add one: an entry here and a branch
  * in `SettingsPage` below (a list or table page wraps itself in `settings-body settings-body--wide`).
  */
-const PAGES: { key: SettingsTab; name: string; icon: LucideIcon; soon?: boolean }[] = [
+const ALL_PAGES: { key: SettingsTab; name: string; icon: LucideIcon; soon?: boolean }[] = [
   { key: "general", name: "General", icon: SlidersHorizontal },
   { key: "models", name: "Models", icon: Cpu },
   { key: "search", name: "Search", icon: ScanSearch },
@@ -114,9 +117,21 @@ const PAGES: { key: SettingsTab; name: string; icon: LucideIcon; soon?: boolean 
   { key: "skills", name: "Skills", icon: Zap },
   { key: "mcp", name: "MCP servers", icon: Plug },
   { key: "tools", name: "Tools", icon: Wrench },
+  { key: "code", name: "Code", icon: SquareCode },
   { key: "usage", name: "Usage", icon: BarChart3 },
   { key: "integrations", name: "Integrations", icon: Blocks, soon: true },
 ];
+
+/** The pages on show: Code only while the server has code sessions, or has them but not set up. */
+function usePages() {
+  const code = useCodeSetup() !== "unsupported";
+  return code ? ALL_PAGES : ALL_PAGES.filter((p) => p.key !== "code");
+}
+
+/** Settings → Code: the real page once code sessions are available, how to set them up before. */
+function CodePage() {
+  return useCodeAvailable() ? <CodeSettingsSection /> : <CodeSetupSection />;
+}
 
 interface Props extends FolderProps {
   /** The page on show. The owner holds it so links from elsewhere can land on a page; left out, the panel keeps its own. */
@@ -131,6 +146,7 @@ interface Props extends FolderProps {
 export default function SettingsPanel({ tab: tabProp, onTabChange, reloadKey = 0, focusTool = null, ...folderProps }: Props) {
   const [ownTab, setOwnTab] = useState<SettingsTab>("general");
   const [status, setStatus] = useState<SaveStatus>("idle");
+  const PAGES = usePages();
   const requested = tabProp ?? ownTab;
   // A page name remembered from an older build may no longer exist.
   const tab = PAGES.some((p) => p.key === requested) ? requested : "general";
@@ -213,6 +229,8 @@ function SettingsPage({
       return <div className="settings-body settings-body--wide"><SkillPanel embedded /></div>;
     case "mcp":
       return <div className="settings-body settings-body--wide"><McpServersSection /></div>;
+    case "code":
+      return <div className="settings-body settings-body--wide"><CodePage /></div>;
     case "search":
       return <div className="settings-body"><RetrievalSection /></div>;
     case "usage":

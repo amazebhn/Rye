@@ -227,6 +227,49 @@ const SkillsSchema = z.object({
   dirs: z.array(z.string()).default(["~/.agents/skills"]),
 });
 
+// Code sessions (docs/design/code-sessions.md §7; the shapes are `CodeConfig` in code/types.ts).
+// Nothing about code sessions is visible until at least one [[code.repos]] entry is listed.
+const CodePolicySchema = z.object({
+  // Hosts sandboxed commands may reach without asking; empty denies the network.
+  allowed_domains: z.array(z.string()).default([]),
+  // Command patterns (`bun test *`) added to the built-in policy, which can't be loosened past its denials.
+  allow: z.array(z.string()).default([]),
+  ask: z.array(z.string()).default([]),
+  deny: z.array(z.string()).default([]),
+});
+const CodeEngineIdSchema = z
+  .string()
+  .regex(/^(claude|pi|acp:[a-z0-9][a-z0-9_-]{0,31})$/, 'use "claude" or "acp:copilot" (later "pi" and other "acp:<cli>")')
+  .transform((v) => v as "claude" | "pi" | `acp:${string}`);
+const CodeRepoSchema = z.object({
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "use letters, digits, ., - and _"),
+  path: z.string().min(1),
+  base: z.string().optional(),
+  isolation: z.enum(["clone", "worktree"]).default("clone"),
+  setup: z.array(z.string()).default([]),
+  checks: z.array(z.string()).default([]),
+  policy: CodePolicySchema.optional(),
+  allow_write: z.array(z.string()).optional(),
+});
+const CodeSchema = z.object({
+  enabled: z.boolean().default(true),
+  engine: CodeEngineIdSchema.default("claude"),
+  // Blank: claude.model for the Claude engine, else the engine's default.
+  model: z.string().default(""),
+  // Blank: DATA_DIR/code.
+  worktree_root: z.string().default(""),
+  max_sessions: z.number().int().min(1).default(6),
+  archive_after_days: z.number().int().min(1).default(14),
+  approval_timeout_minutes: z.number().positive().default(30),
+  max_turns: z.number().int().min(1).default(200),
+  max_cost_usd: z.number().positive().default(5),
+  editor: z.enum(["vscode", "cursor", "zed", "none"]).default("vscode"),
+  // The GitHub Copilot CLI for the "acp:copilot" engine. Blank: `copilot` on PATH.
+  copilot_path: z.string().default(""),
+  policy: CodePolicySchema.default({}),
+  repos: z.array(CodeRepoSchema).default([]),
+});
+
 export const MODEL_TIERS = ["low", "medium", "high"] as const;
 const ModelTierSchema = z.enum(MODEL_TIERS);
 export type ModelTier = z.infer<typeof ModelTierSchema>;
@@ -331,6 +374,8 @@ const SettingsSchema = z.object({
   git: GitSchema.default({}),
   code_search: CodeSearchSchema.default({}),
   skills: SkillsSchema.default({}),
+  // Code sessions; settingsForEnv leaves this alone (a code session ignores the chat's environment).
+  code: CodeSchema.default({}),
 
   data_dir: z.string().default(DATA_DIR),
   db_path: z.string().default(join(DATA_DIR, "knowledge.db")),
@@ -354,6 +399,8 @@ const SettingsSchema = z.object({
 export type Settings = z.infer<typeof SettingsSchema>;
 export type CodeSearchConfig = z.infer<typeof CodeSearchSchema>;
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
+/** `[code]`; the same shape as `CodeConfig` (code/types.ts). */
+export type CodeSettings = z.infer<typeof SettingsSchema>["code"];
 export type EnvironmentOverride = z.infer<typeof SettingsSchema>["environments"][string];
 
 // ---------------------------------------------------------------------------
@@ -604,6 +651,12 @@ function loadSettings(): Settings {
     repo.path = expandHome(repo.path);
   }
   s.skills.dirs = s.skills.dirs.map(expandHome);
+  if (s.code.worktree_root) s.code.worktree_root = expandHome(s.code.worktree_root);
+  if (s.code.copilot_path) s.code.copilot_path = expandHome(s.code.copilot_path);
+  for (const repo of s.code.repos) {
+    repo.path = expandHome(repo.path);
+    if (repo.allow_write) repo.allow_write = repo.allow_write.map(expandHome);
+  }
   applyModelOverrides(s);
   // Apply the in-memory model override so UI selections persist across reloads.
   if (runtimeModelOverride) {
