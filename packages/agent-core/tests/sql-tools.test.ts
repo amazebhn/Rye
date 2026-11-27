@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { getSettings, mergeDatabases, type Settings } from "../src/config.js";
 import { describeConnections, listConnections, pickConnection } from "../src/db/connections.js";
 import { QueryTimeoutError, type SqlDriver } from "../src/db/drivers.js";
-import { readOnlyViolation } from "../src/tools/sql.js";
+import { formatKeys, readOnlyViolation } from "../src/tools/sql.js";
 import { GROUP_ALIASES, SQL_GROUP, buildToolGroups, resolveGroupNames } from "../src/tools/groups.js";
 import { TOOLS } from "../src/tools/index.js";
 
@@ -120,6 +120,49 @@ describe("read-only guard", () => {
     expect(readOnlyViolation("mysql", "WITH gone AS (DELETE FROM t) SELECT 1")).toContain("Only read-only statements");
     // A column that merely contains a keyword is fine.
     expect(readOnlyViolation("mysql", "WITH x AS (SELECT updated_at, 'delete me' AS note FROM t) SELECT * FROM x")).toBeNull();
+  });
+
+  test("MySQL's EXPLAIN may only explain a read: EXPLAIN ANALYZE runs the statement", () => {
+    for (const q of ["EXPLAIN ANALYZE DELETE FROM t WHERE id = 1", "explain analyze update t set a = 1", "DESCRIBE DELETE FROM t", "EXPLAIN FORMAT=TREE UPDATE t SET a = 1"]) {
+      expect(readOnlyViolation("mysql", q)).toBe("EXPLAIN may only explain a read-only statement.");
+    }
+    for (const q of ["EXPLAIN SELECT * FROM orders WHERE status = 'delete'", "EXPLAIN FORMAT=TREE SELECT 1", "EXPLAIN ANALYZE SELECT updated_at FROM t", "DESCRIBE orders"]) {
+      expect(readOnlyViolation("mysql", q)).toBeNull();
+    }
+    // Postgres runs EXPLAIN ANALYZE in its read-only transaction, which refuses the write itself.
+    expect(readOnlyViolation("postgres", "EXPLAIN ANALYZE SELECT 1")).toBeNull();
+  });
+});
+
+describe("table keys in the schema tool", () => {
+  test("indexes, joins out and joins in", () => {
+    const lines = formatKeys({
+      indexes: [
+        { name: "returns_pkey", columns: ["id"], unique: true, primary: true },
+        { name: "returns_order_id_idx", columns: ["order_id"], unique: false, primary: false },
+        { name: "returns_open_idx", columns: ["lower(email)"], unique: false, primary: false, method: "gin", where: "(closed_at IS NULL)" },
+      ],
+      foreignKeys: [{ name: "returns_order_fk", columns: ["order_id"], table: "orders", otherColumns: ["id"] }],
+      referencedBy: [{ name: "refunds_return_fk", columns: ["return_id"], table: "billing.refunds", otherColumns: ["id"] }],
+    });
+    expect(lines).toEqual([
+      "Indexes:",
+      "  - returns_pkey: PRIMARY KEY (id)",
+      "  - returns_order_id_idx: (order_id)",
+      "  - returns_open_idx: (lower(email)) USING gin WHERE (closed_at IS NULL)",
+      "Foreign keys (join to):",
+      "  - (order_id) → orders (id)  [returns_order_fk]",
+      "Referenced by (joins from):",
+      "  - billing.refunds (return_id) → (id)  [refunds_return_fk]",
+    ]);
+  });
+
+  test("a table with no keys says so, and points at naming conventions", () => {
+    expect(formatKeys({ indexes: [], foreignKeys: [], referencedBy: [] })).toEqual([
+      "Indexes:",
+      "  (none)",
+      "Foreign keys: none declared (joins, if any, are by convention: look for matching *_id columns).",
+    ]);
   });
 });
 

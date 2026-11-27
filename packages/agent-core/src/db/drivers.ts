@@ -21,6 +21,51 @@ export interface ColumnInfo {
   default: string | null;
 }
 
+export interface IndexInfo {
+  name: string;
+  /** Key columns in order; an expression index lists its expressions. */
+  columns: string[];
+  unique: boolean;
+  primary: boolean;
+  /** The index method when it isn't the engine's usual one (gin, gist, hash, fulltext…). */
+  method?: string;
+  /** A partial index's condition (Postgres). */
+  where?: string;
+}
+
+export interface ForeignKeyInfo {
+  name: string;
+  /** This side's columns, in order. */
+  columns: string[];
+  /** The other table (schema.table when it isn't in the default schema). */
+  table: string;
+  /** The other table's columns, matching `columns`. */
+  otherColumns: string[];
+}
+
+/** What a table's keys say about how to filter and join it. */
+export interface TableKeys {
+  indexes: IndexInfo[];
+  /** This table's foreign keys: its columns → another table's. */
+  foreignKeys: ForeignKeyInfo[];
+  /** Other tables' foreign keys pointing at this one: their columns (`columns`) → this table's (`otherColumns`). */
+  referencedBy: ForeignKeyInfo[];
+}
+
+/** A list from a driver row: Postgres JSON arrays may arrive parsed or as text. */
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return typeof value === "string" && value ? [value] : [];
+}
+
 export interface SqlDriver {
   /** Run one read-only statement. `database` overrides the connection's default. */
   query(conn: DbConnection, sql: string, database?: string): Promise<Row[]>;
@@ -28,6 +73,8 @@ export interface SqlDriver {
   tables(conn: DbConnection, database?: string): Promise<string[]>;
   /** A table's columns, or null if there is no such table. */
   describe(conn: DbConnection, table: string, database?: string): Promise<ColumnInfo[] | null>;
+  /** A table's indexes and foreign keys (both directions). Optional: a driver without it shows columns only. */
+  keys?(conn: DbConnection, table: string, database?: string): Promise<TableKeys>;
   /** Databases (Postgres) or schemas (MySQL) this user can see on the server. */
   databases(conn: DbConnection): Promise<string[]>;
   /** Connect and disconnect, to check the settings. */
@@ -179,6 +226,62 @@ const mysqlDriver: SqlDriver = {
     }
   },
 
+  async keys(conn, table, database) {
+    const c = await mysqlConnect(conn, database);
+    try {
+      // "schema.table" names another schema; a bare name is in the connection's current one (DATABASE()).
+      const { schema, name } = splitTable(table.replace(/`/g, ""));
+      const where = "TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?";
+      const [indexRows] = (await c.execute(
+        `SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, INDEX_TYPE FROM information_schema.STATISTICS
+         WHERE ${where} ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX`,
+        [schema, name],
+      )) as [Row[], unknown];
+      const indexes = new Map<string, IndexInfo>();
+      for (const row of indexRows) {
+        const indexName = String(row["INDEX_NAME"]);
+        const type = String(row["INDEX_TYPE"] ?? "").toLowerCase();
+        const index = indexes.get(indexName) ?? {
+          name: indexName,
+          columns: [],
+          unique: Number(row["NON_UNIQUE"]) === 0,
+          primary: indexName === "PRIMARY",
+          ...(type && type !== "btree" ? { method: type } : {}),
+        };
+        index.columns.push(String(row["COLUMN_NAME"] ?? "(expression)"));
+        indexes.set(indexName, index);
+      }
+      // Tables in the current schema are named bare, others schema.table.
+      const [[current]] = (await c.execute("SELECT DATABASE() AS db")) as [Row[], unknown];
+      const here = schema ?? String(current?.["db"] ?? "");
+      const named = (s: unknown, t: unknown) => (String(s) === here ? String(t) : `${String(s)}.${String(t)}`);
+      const fkRows = async (side: "out" | "in") => {
+        const [rows] = (await c.execute(
+          `SELECT CONSTRAINT_NAME, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME,
+                  REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+           FROM information_schema.KEY_COLUMN_USAGE
+           WHERE ${side === "out" ? where + " AND REFERENCED_TABLE_NAME IS NOT NULL" : "REFERENCED_TABLE_SCHEMA = COALESCE(?, DATABASE()) AND REFERENCED_TABLE_NAME = ?"}
+           ORDER BY TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION`,
+          [schema, name],
+        )) as [Row[], unknown];
+        const keys = new Map<string, ForeignKeyInfo>();
+        for (const row of rows) {
+          const other = side === "out" ? named(row["REFERENCED_TABLE_SCHEMA"], row["REFERENCED_TABLE_NAME"]) : named(row["TABLE_SCHEMA"], row["TABLE_NAME"]);
+          const id = `${other}|${String(row["CONSTRAINT_NAME"])}`;
+          const key = keys.get(id) ?? { name: String(row["CONSTRAINT_NAME"]), columns: [], table: other, otherColumns: [] };
+          // A row is always referencing column → referenced column: out, ours → theirs; in, theirs → ours.
+          key.columns.push(String(row["COLUMN_NAME"]));
+          key.otherColumns.push(String(row["REFERENCED_COLUMN_NAME"]));
+          keys.set(id, key);
+        }
+        return [...keys.values()];
+      };
+      return { indexes: [...indexes.values()], foreignKeys: await fkRows("out"), referencedBy: await fkRows("in") };
+    } finally {
+      await mysqlClose(c);
+    }
+  },
+
   async databases(conn) {
     // No default schema, so this works even if the configured one is missing or inaccessible.
     const c = await mysqlConnect(conn, "");
@@ -286,6 +389,63 @@ const postgresDriver: SqlDriver = {
       )) as Array<{ column_name: string; type: string; nullable: boolean; column_default: string | null; is_pk: boolean }>;
       if (rows.length === 0) return null;
       return rows.map((r) => ({ name: r.column_name, type: r.type, nullable: r.nullable, key: r.is_pk ? "PK" : "", default: r.column_default }));
+    });
+  },
+
+  async keys(conn, table, database) {
+    const { schema, name } = splitTable(table);
+    return withPostgres(conn, database, 10, async (sql) => {
+      // The table as describe() finds it: the named schema, else public first, then any other.
+      const tbl = `tbl AS (
+        SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = $1 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND ($2::text IS NULL OR n.nspname = $2)
+        ORDER BY (n.nspname <> 'public'), n.nspname LIMIT 1)`;
+      const indexRows = (await sql.unsafe(
+        `WITH ${tbl}
+         SELECT i.relname AS name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, am.amname AS method,
+                pg_get_expr(ix.indpred, ix.indrelid) AS predicate,
+                array_to_json(array(SELECT pg_get_indexdef(ix.indexrelid, k, true) FROM generate_series(1, ix.indnkeyatts) AS k ORDER BY k)) AS columns
+         FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_am am ON am.oid = i.relam
+         WHERE ix.indrelid = (SELECT oid FROM tbl)
+         ORDER BY ix.indisprimary DESC, i.relname`,
+        [name, schema],
+      )) as Array<{ name: string; is_unique: boolean; is_primary: boolean; method: string; predicate: string | null; columns: unknown }>;
+      // Column names of a constraint's key, in key order, for the table on either side.
+      const cols = (attnums: string, rel: string) =>
+        `array_to_json(array(SELECT a.attname FROM unnest(${attnums}) WITH ORDINALITY AS u(attnum, ord)
+           JOIN pg_attribute a ON a.attrelid = ${rel} AND a.attnum = u.attnum ORDER BY u.ord))`;
+      const fkRows = async (side: "out" | "in") =>
+        (await sql.unsafe(
+          `WITH ${tbl}
+           SELECT con.conname AS name,
+                  ${side === "out" ? "con.confrelid" : "con.conrelid"}::regclass::text AS other_table,
+                  ${cols("con.conkey", "con.conrelid")} AS columns,
+                  ${cols("con.confkey", "con.confrelid")} AS other_columns
+           FROM pg_constraint con
+           WHERE con.contype = 'f' AND ${side === "out" ? "con.conrelid" : "con.confrelid"} = (SELECT oid FROM tbl)
+           ORDER BY 2, 1`,
+          [name, schema],
+        )) as Array<{ name: string; other_table: string; columns: unknown; other_columns: unknown }>;
+      const toKey = (r: { name: string; other_table: string; columns: unknown; other_columns: unknown }): ForeignKeyInfo => ({
+        name: r.name,
+        table: r.other_table,
+        // A row is always referencing columns (conkey) → referenced columns (confkey).
+        columns: stringList(r.columns),
+        otherColumns: stringList(r.other_columns),
+      });
+      return {
+        indexes: indexRows.map((r) => ({
+          name: r.name,
+          columns: stringList(r.columns),
+          unique: r.is_unique,
+          primary: r.is_primary,
+          ...(r.method && r.method !== "btree" ? { method: r.method } : {}),
+          ...(r.predicate ? { where: r.predicate } : {}),
+        })),
+        foreignKeys: (await fkRows("out")).map(toKey),
+        referencedBy: (await fkRows("in")).map(toKey),
+      };
     });
   },
 

@@ -6,7 +6,7 @@
 import { type Tool } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describeConnections, describeProblems, engineName, listConnections, pickConnection, LEGACY_MYSQL_NAME, type DbConnection } from "../db/connections.js";
-import { QUERY_TIMEOUT_MS, QueryTimeoutError, driverFor, errorText, type SqlDriver } from "../db/drivers.js";
+import { QUERY_TIMEOUT_MS, QueryTimeoutError, driverFor, errorText, type SqlDriver, type TableKeys } from "../db/drivers.js";
 import { storeOrInline } from "../results/query.js";
 
 export const SQL_QUERY_TOOL = "sql_query_tool";
@@ -36,6 +36,11 @@ export function readOnlyViolation(type: DbConnection["type"], query: string): st
   if (/;\s*\S/.test(withoutStrings.replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, ""))) return "Run one statement at a time.";
   if (type === "mysql" && /^\s*(?:\(\s*)*with\b/i.test(query) && WRITE_KEYWORD.test(withoutStrings)) {
     return `Only read-only statements (${allowed}) are permitted.`;
+  }
+  // MySQL's EXPLAIN ANALYZE runs the statement it explains, and it accepts UPDATE and DELETE (DESCRIBE and
+  // DESC are EXPLAIN's synonyms). Postgres would refuse the write in its read-only transaction; MySQL wouldn't.
+  if (type === "mysql" && /^\s*(?:\(\s*)*(explain|describe|desc)\b/i.test(query) && WRITE_KEYWORD.test(withoutStrings)) {
+    return "EXPLAIN may only explain a read-only statement.";
   }
   return null;
 }
@@ -70,6 +75,31 @@ export async function sqlQuery(
   }
 }
 
+/** A table's keys as the schema tool shows them: indexes, then joins out, then joins in. */
+export function formatKeys(keys: TableKeys): string[] {
+  const list = (cols: string[]) => cols.join(", ");
+  const lines = ["Indexes:"];
+  if (keys.indexes.length === 0) lines.push("  (none)");
+  for (const ix of keys.indexes) {
+    const kind = ix.primary ? "PRIMARY KEY " : ix.unique ? "UNIQUE " : "";
+    const method = ix.method ? ` USING ${ix.method}` : "";
+    const where = ix.where ? ` WHERE ${ix.where}` : "";
+    lines.push(`  - ${ix.name}: ${kind}(${list(ix.columns)})${method}${where}`);
+  }
+  if (keys.foreignKeys.length > 0) {
+    lines.push("Foreign keys (join to):");
+    for (const fk of keys.foreignKeys) lines.push(`  - (${list(fk.columns)}) → ${fk.table} (${list(fk.otherColumns)})  [${fk.name}]`);
+  }
+  if (keys.referencedBy.length > 0) {
+    lines.push("Referenced by (joins from):");
+    for (const fk of keys.referencedBy) lines.push(`  - ${fk.table} (${list(fk.columns)}) → (${list(fk.otherColumns)})  [${fk.name}]`);
+  }
+  if (keys.foreignKeys.length === 0 && keys.referencedBy.length === 0) {
+    lines.push("Foreign keys: none declared (joins, if any, are by convention: look for matching *_id columns).");
+  }
+  return lines;
+}
+
 export async function sqlSchema(args: { table?: string; connection?: string; database?: string }, driver: DriverLookup = realDriver): Promise<string> {
   const conn = pickConnection(args.connection);
   if ("error" in conn) return `Error: ${conn.error}`;
@@ -80,6 +110,15 @@ export async function sqlSchema(args: { table?: string; connection?: string; dat
       const lines = [`Schema for table: ${args.table} (${where(conn)})`, ""];
       for (const col of columns) {
         lines.push(`  ${col.name}: ${col.type} ${col.nullable ? "NULL" : "NOT NULL"}${col.key ? ` [${col.key}]` : ""}${col.default != null ? ` DEFAULT ${col.default}` : ""}`);
+      }
+      const keysFn = driver(conn).keys;
+      if (keysFn) {
+        try {
+          lines.push("", ...formatKeys(await keysFn.call(driver(conn), conn, args.table, args.database)));
+        } catch (err) {
+          // Columns are still useful; say why the keys are missing rather than failing the whole call.
+          lines.push("", `(Indexes and foreign keys unavailable: ${errorText(err)})`);
+        }
       }
       return lines.join("\n");
     }
@@ -143,7 +182,11 @@ export const sqlTools: Tool[] = [
       "Run one read-only SQL statement against a configured database (MySQL or PostgreSQL; the connection decides the dialect). " +
       "Only reading statements are permitted (SELECT, WITH, SHOW, EXPLAIN, and DESCRIBE on MySQL). " +
       "An environment can have several connections: pass 'connection' to choose one (see sql_list_databases_tool for their names and engines). " +
-      "Pass 'database' to run against another database on the same server than the connection's default.",
+      "Pass 'database' to run against another database on the same server than the connection's default. " +
+      "Join along the foreign keys sql_schema_tool lists, and filter on indexed columns. " +
+      "Before a query that could be slow (a large table, no LIMIT, a filter or join on a column with no index, a function wrapped round an indexed column), " +
+      "check its plan with plain EXPLAIN first (MySQL: EXPLAIN FORMAT=TREE), which shows the plan without running the query: " +
+      "a full or sequential scan of a big table means rewrite it to use an index or narrow it. EXPLAIN ANALYZE runs the query, so only use it on one already known to be quick.",
     parameters: Type.Object({
       query: Type.String({ description: "The SQL statement, in the dialect of the connection's engine." }),
       connection: CONNECTION_ARG,
@@ -153,7 +196,8 @@ export const sqlTools: Tool[] = [
   {
     name: SQL_SCHEMA_TOOL,
     description:
-      "Inspect a database's schema. With a table name, returns its columns (type, nullability, key, default); without, lists the tables. " +
+      "Inspect a database's schema. With a table name, returns its columns (type, nullability, key, default), its indexes, " +
+      "its foreign keys and the tables whose foreign keys point at it (how to join it); without, lists the tables. " +
       "On PostgreSQL, tables outside the public schema are named schema.table. Use 'connection' and 'database' as in sql_query_tool.",
     parameters: Type.Object({
       table: Type.Optional(Type.String({ description: "Table to describe (schema.table on PostgreSQL if not in public). Omit to list all tables." })),
